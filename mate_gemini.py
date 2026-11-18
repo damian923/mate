@@ -17,7 +17,8 @@ Vas a recibir el AUDIO de lo que el usuario le dijo a Mate (habla en español ri
 2. Si el audio es ruido, una charla entre otras personas o algo que NO es un pedido para Mate,
    devolvé {"heard": "", "action": "none"}.
 3. Si es un pedido, elegí la acción como siempre.
-Respondé SOLO un JSON: {"heard": "...", "action": "...", "args": {...}, "reply": "..."}"""
+Respondé SOLO un JSON: {"heard": "...", "action": "...", "args": {...}, "reply": "..."}
+(si son varios cambios: {"heard": "...", "actions": [{"action": "...", "args": {...}}, ...], "reply": "..."})"""
 
 
 def wav_b64(audio, rate=16000):
@@ -58,7 +59,7 @@ def understand_audio(key, audio, system, history=None, model=None):
     ctx = "\n".join(f"{m['role']}: {m['content']}" for m in (history or [])[-4:])
     parts = ([{"text": "Conversación reciente:\n" + ctx}] if ctx else []) + \
             [{"inline_data": {"mime_type": "audio/wav", "data": wav_b64(audio)}}]
-    out = call_any(key, _models(model), system + INSTRUCCIONES_VOZ, parts)
+    out = call_any(key, _models(model), system + INSTRUCCIONES_VOZ, parts, max_out=1200)
     out["_secs"] = round(time.time() - t0, 1)
     return out
 
@@ -67,7 +68,7 @@ def understand_text(key, text, system, history=None, model=None):
     """Pedido escrito -> {"action", "args", "reply"} (igual que la IA local, pero en ~1 s)."""
     ctx = "\n".join(f"{m['role']}: {m['content']}" for m in (history or [])[-6:])
     parts = ([{"text": "Conversación reciente:\n" + ctx}] if ctx else []) + [{"text": text}]
-    return call_any(key, _models(model), system, parts)
+    return call_any(key, _models(model), system, parts, max_out=1200)
 
 
 def complete(key, model, system, prompt, max_tokens=600):
@@ -141,7 +142,7 @@ def call_any(key, models, system, parts, max_out=400):
         except Exception as e: q.put((m, None, e))
     for m in models[:3]: threading.Thread(target=one, args=(m,), daemon=True).start()
     err, t0 = None, time.time()
-    limite = 12.5 if max_out <= 400 else 30     # textos largos (notas de reunión) pueden tardar más
+    limite = 15 if max_out <= 1200 else 30     # textos largos (notas de reunión) pueden tardar más
     for _ in range(min(3, len(models))):
         try: m, out, e = q.get(timeout=max(0.5, limite - (time.time() - t0)))
         except queue.Empty: break

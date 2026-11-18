@@ -124,7 +124,15 @@ Hoy es {today}. Ahora son las {now}. Próximos días:
 {days}
 Cuentas de Google conectadas: {accounts}.
 Lo que sabés del usuario:
-{memory}"""
+{memory}
+
+Tareas abiertas del usuario (para referirte a una usá su texto exacto en "task"):
+{tasks}
+
+VARIAS ACCIONES: si el pedido implica varios cambios (ej. "pasá todas las de hoy a mañana", "repartilas entre
+mañana y el viernes", "marcá como hechas las de DM"), respondé {"actions": [{"action": "...", "args": {...}}, ...]}
+con una acción por tarea, usando las fechas exactas YYYY-MM-DD de la lista de días. Para repartir, alterná o
+agrupá con criterio y explicalo corto en "reply"."""
 
 
 _ollama_ok = 0
@@ -231,7 +239,9 @@ class Agent:
         days = "\n".join(f"{DIAS[(today + dt.timedelta(i)).weekday()]} = {(today + dt.timedelta(i)).isoformat()}"
                          for i in range(8))
         mem = "\n".join(f"- {m}" for m in self.d["memory"]) or "(nada todavía)"
-        return (SYSTEM.replace("{name}", NAME).replace("{persona}", ar.persona()).replace("{today}", f"{DIAS[today.weekday()]} {today.isoformat()}")
+        abiertas = [t for t in self.d["tasks"] if t["status"] != "hecha"][:40]
+        tasks = "\n".join(f"- {t['text']} | {t.get('date') or 'sin fecha'} | {t['status']}" for t in abiertas) or "(ninguna)"
+        return (SYSTEM.replace("{tasks}", tasks).replace("{name}", NAME).replace("{persona}", ar.persona()).replace("{today}", f"{DIAS[today.weekday()]} {today.isoformat()}")
                 .replace("{now}", dt.datetime.now().strftime("%H:%M")).replace("{days}", days)
                 .replace("{accounts}", ", ".join(self.gmail.accounts()) or "ninguna").replace("{memory}", mem))
 
@@ -378,6 +388,29 @@ class Agent:
         fast = self.fast_route(heard)              # los atajos instantáneos siguen ganando
         return heard, self.handle(heard, routed=fast or r)
 
+    SEGURAS_EN_LOTE = {"move_task", "task_status", "add_task", "delete_task", "remember", "reminder", "cal_add"}
+
+    def _run_many(self, r):
+        """Ejecuta varias acciones de un pedido (ej. repartir tareas). Sólo acciones de tareas/agenda:
+        nada que mande mensajes sale en lote."""
+        hechas, fallas = [], []
+        self._step(f"Haciendo {len(r['actions'])} cambios")
+        for it in r["actions"][:30]:
+            a = it.get("action"); args = self.fix_args(a, it.get("args") or {})
+            fn = getattr(self, "do_" + str(a), None)
+            if a not in self.SEGURAS_EN_LOTE or not fn:
+                fallas.append(f"{a} (no lo hago en lote)"); continue
+            try:
+                out = fn(args); hechas.append(out)
+            except Exception as e:
+                fallas.append(str(e)[:60])
+        save(self.d); self.ui.refresh_board()
+        msg = (r.get("reply") or f"Listo, hice {len(hechas)} cambios").strip()
+        if not msg.startswith("✓"): msg = "✓ " + msg
+        detalle = "\n".join(h.replace("✓ ", "• ") for h in hechas if h)
+        if fallas: detalle += "\n✗ No pude: " + "; ".join(fallas)
+        return msg + ("\n" + detalle if detalle else "")
+
     def handle(self, text, routed=None):
         self.last_text = text
         quick = None if routed else self.charla(text)
@@ -389,12 +422,14 @@ class Agent:
         if not r and self.gemini_key():            # pedido escrito: Gemini entiende en ~1 s
             import mate_gemini as G
             self._step("Entendiendo el pedido")
-            try:
-                r = G.understand_text(self.gemini_key(), text, self.system_prompt(), self.history,
-                                      sv.config().get("gemini_model"))
-                raw = json.dumps(r, ensure_ascii=False)
-            except Exception as e:
-                log(f"gemini texto: {e}"); r = None
+            for intento in (1, 2):                 # si Google está saturado, reintento antes de usar la IA chica
+                try:
+                    r = G.understand_text(self.gemini_key(), text, self.system_prompt(), self.history,
+                                          sv.config().get("gemini_model"))
+                    raw = json.dumps(r, ensure_ascii=False); break
+                except Exception as e:
+                    log(f"gemini texto (intento {intento}): {e}"); r = None
+                    if intento == 1: self._step("Google está saturado, reintento"); time.sleep(1.5)
         if not r:
             msgs = [{"role": "system", "content": self.system_prompt()}] + self.history[-6:] + \
                    [{"role": "user", "content": text}]
@@ -406,6 +441,8 @@ class Agent:
             try: r = json.loads(raw)
             except Exception: r = {"action": "chat", "reply": raw[:300]}
         self.history += [{"role": "user", "content": text}, {"role": "assistant", "content": raw}]
+        if isinstance(r.get("actions"), list) and r["actions"]:   # varios cambios de una
+            return self._run_many(r)
         a = r.get("action") or "chat"
         args = self.fix_args(a, r.get("args") or {})
         fn = getattr(self, "do_" + str(a), None)
