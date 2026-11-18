@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+*.log
+mate.exe.WebView2/
+ui/version_anterior/
+propuestas/

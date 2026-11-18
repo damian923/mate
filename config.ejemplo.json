@@ -1,0 +1,12 @@
+﻿{
+  "model": "llama3.2:3b",
+  "name": "Mate",
+  "wake_word": "mate",
+  "voice": true,
+  "speak": true,
+  "clap_threshold": 0.35,
+  "mail_alerts": true,
+  "calendar_account": "",
+  "spotify": { "client_id": "", "client_secret": "" }
+}
+

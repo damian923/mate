@@ -1,0 +1,266 @@
+"""Audio de Mate.
+
+Escucha:  Vosk (liviano, siempre prendido) detecta un posible "Mate…" o dos aplausos.
+          Whisper (más preciso) confirma y transcribe el pedido. Así no se activa solo
+          y entiende bien lo que decís.
+Habla:    Piper, voces neuronales en español que corren en tu compu (se eligen en Ajustes).
+"""
+import json, os, queue, re, threading, time, wave
+from pathlib import Path
+
+import numpy as np
+
+DATA_DIR = Path.home() / ".mate"
+VOICES_DIR = DATA_DIR / "voces"
+os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
+
+
+def log(*a):
+    """Registro de lo que escucha Mate (~/.mate/mate.log), útil para ajustar la voz."""
+    try:
+        with open(DATA_DIR / "mate.log", "a", encoding="utf-8") as f:
+            f.write(time.strftime("%H:%M:%S ") + " ".join(str(x) for x in a) + chr(10))
+    except Exception:
+        pass
+
+VOICE_NAMES = {   # archivo -> nombre lindo para Ajustes
+    "es_AR-daniela-high": "Daniela (Argentina)",
+    "es_MX-claude-high": "Claude (México)",
+    "es_MX-ald-medium": "Aldo (México)",
+    "es_ES-davefx-medium": "Dave (España)",
+    "es_ES-sharvard-medium": "Sharvard (España)",
+}
+
+
+def voices():
+    return [{"id": p.stem, "name": VOICE_NAMES.get(p.stem, p.stem)} for p in sorted(VOICES_DIR.glob("*.onnx"))]
+
+
+# =============================== VOZ ===============================
+class Speaker:
+    def __init__(self, voice=None, speed=1.0):
+        self.q, self.speaking = queue.Queue(), False
+        self.voice_id, self.speed, self._voice = voice, speed, None
+        threading.Thread(target=self._run, daemon=True).start()
+
+    def set_voice(self, voice_id):
+        self.voice_id, self._voice = voice_id, None
+
+    def _load(self):
+        if self._voice is not None: return self._voice
+        from piper import PiperVoice
+        ids = [v["id"] for v in voices()]
+        vid = self.voice_id if self.voice_id in ids else ("es_AR-daniela-high" if "es_AR-daniela-high" in ids else (ids or [None])[0])
+        if not vid: return None
+        self._voice = PiperVoice.load(str(VOICES_DIR / f"{vid}.onnx"))
+        return self._voice
+
+    def _synth(self, text):
+        from piper import SynthesisConfig
+        v = self._load()
+        chunks = [c.audio_int16_array for c in v.synthesize(text, syn_config=SynthesisConfig(length_scale=1 / self.speed))]
+        return np.concatenate(chunks), v.config.sample_rate
+
+    def _run(self):
+        import sounddevice as sd
+        try: self._load()
+        except Exception: pass
+        while True:
+            text = self.q.get()
+            try:
+                audio, sr = self._synth(text)
+                self.speaking = True
+                sd.play(audio, sr); sd.wait()
+            except Exception:
+                self._fallback(text)
+            time.sleep(0.25); self.speaking = False
+
+    def _fallback(self, text):
+        try:
+            import pythoncom, pyttsx3
+            pythoncom.CoInitialize()
+            e = pyttsx3.init(); self.speaking = True; e.say(text); e.runAndWait()
+        except Exception:
+            pass
+
+    def say(self, text):
+        clean = re.sub(r"[^\w\s.,;:¡!¿?%/()'-]", "", text).strip()
+        if clean: self.q.put(clean[:500])
+
+    def sample(self, voice_id):
+        self.set_voice(voice_id)
+        self.say("¡Hola! Soy Mate. Así sueno con esta voz. ¿Te cebo uno?")
+
+
+# =============================== ESCUCHA ===============================
+class Listener:
+    """- "Mate, <pedido>"   -> ejecuta el pedido
+       - "Mate" sola        -> escucha el próximo pedido
+       - dos aplausos       -> escucha el próximo pedido"""
+    RATE, BLOCK = 16000, 1600   # bloques de 100 ms
+
+    def __init__(self, wake, on_command, on_listening, speaker, clap_threshold=0.55,
+                 whisper_model="base", vocab="", claps=True):
+        self.wake, self.on_command, self.on_listening = wake.lower(), on_command, on_listening
+        self.speaker, self.thr, self.claps_on = speaker, clap_threshold, claps
+        self.whisper_name, self.vocab = whisper_model, vocab
+        self.whisper = None
+        self.listen_until, self.claps, self.quiet = 0, [], 0.01
+        self.utter = []            # audio de la frase actual (para Whisper)
+        self.capture = None        # grabación del pedido después de activarse
+        self.started = 0
+        self.on_heard = None       # callback para mostrar lo que entendió (opcional)
+
+    # ---------------- arranque ----------------
+    def start(self):
+        try:
+            import vosk, sounddevice as sd
+        except ImportError as e:
+            return f"Voz desactivada (falta {e.name})"
+        mdir = DATA_DIR / "vosk-es"
+        if not mdir.exists():
+            return "Voz desactivada (falta el modelo de voz)"
+        vosk.SetLogLevel(-1)
+        self.rec = vosk.KaldiRecognizer(vosk.Model(str(mdir)), self.RATE)
+        threading.Thread(target=self._load_whisper, daemon=True).start()
+        q = queue.Queue()
+
+        def loop():
+            with sd.RawInputStream(samplerate=self.RATE, blocksize=self.BLOCK, dtype="int16", channels=1,
+                                   callback=lambda d, *_: q.put(bytes(d))):
+                while True:
+                    self.feed(q.get())
+        self.started = time.time()
+        threading.Thread(target=loop, daemon=True).start()
+        return None
+
+    def feed(self, data):
+        """Procesa 100 ms de audio (int16). Lo usa el micrófono y también las pruebas."""
+        if self.speaker.speaking:          # no escucharse a sí mismo
+            self.rec.Reset(); self.utter = []; return
+        s = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768
+        self.pre = (getattr(self, "pre", []) + [s])[-7:]     # últimos 0,7 s, para no comerse el principio
+        if self.capture is not None:
+            self._capture_step(s); return
+        self.utter.append(s)
+        if len(self.utter) > 120: self.utter = self.utter[-120:]   # máx 12 s
+        if self.claps_on: self._clap(s)
+        if self.rec.AcceptWaveform(data):
+            text = json.loads(self.rec.Result()).get("text", "")
+            audio = np.concatenate(self.utter) if self.utter else None
+            self.utter = []
+            if text: log("vosk:", text); self._candidate(text, audio)
+
+    def _load_whisper(self):
+        try:
+            from faster_whisper import WhisperModel
+            self.whisper = WhisperModel(self.whisper_name, device="cpu", compute_type="int8", cpu_threads=4)
+            log("whisper listo:", self.whisper_name)
+        except Exception as e:
+            log("whisper ERROR:", e); self.whisper = None
+
+    def transcribe(self, audio):
+        """Whisper con pistas de vocabulario. Devuelve '' si es ruido o no está seguro."""
+        if self.whisper is None or audio is None or len(audio) < self.RATE * 0.4:
+            return None
+        prompt = f"{self.wake.capitalize()}, agendá, recordame, poné música, Spotify, Granola, WhatsApp, tareas, mails. {self.vocab}"
+        segs, info = self.whisper.transcribe(audio, language="es", beam_size=1, without_timestamps=True, initial_prompt=prompt,
+                                             vad_filter=False, condition_on_previous_text=False)
+        segs = list(segs)
+        if not segs: return ""
+        if np.mean([s.no_speech_prob for s in segs]) > 0.6 or np.mean([s.avg_logprob for s in segs]) < -1.0:
+            return ""
+        return " ".join(s.text for s in segs).strip()
+
+    # ---------------- palabra clave ----------------
+    def _wake_rx(self):
+        w = re.escape(self.wake).replace("e", "[eé]")   # mate, maté, mates, che mate…
+        return rf"\b{w}s?\b"
+
+    def _has_wake(self, t):
+        return re.search(self._wake_rx(), t.lower()) is not None
+
+    def _after_wake(self, t):
+        m = re.search(self._wake_rx() + r"[\s,.:!¡¿?]*(.*)", t, re.I)
+        return m.group(1).strip(" .,!?¿¡") if m else ""
+
+    def _candidate(self, vosk_text, audio):
+        if not self._has_wake(vosk_text): return
+        threading.Thread(target=self._confirm, args=(vosk_text, audio), daemon=True).start()
+
+    def _confirm(self, vosk_text, audio):
+        text = self.transcribe(audio)
+        log("whisper (confirmar):", repr(text))
+        if text is None:                          # Whisper todavía cargando: uso Vosk
+            text = vosk_text
+        if not text or not self._has_wake(text):  # falsa alarma: no dijo "Mate"
+            return
+        cmd = self._after_wake(text)
+        if len(cmd.split()) >= 2: self._deliver(cmd)
+        else: self.activate()
+
+    # ---------------- aplausos ----------------
+    def _clap(self, s):
+        now = time.time()
+        rms, peak = float(np.sqrt((s ** 2).mean())), float(np.abs(s).max())
+        if now - self.started < 4:
+            self.quiet = 0.9 * self.quiet + 0.1 * rms; return
+        # aplauso = golpe muy fuerte y corto sobre un ambiente tranquilo
+        if peak > self.thr and rms < peak * 0.3 and peak > self.quiet * 12:
+            if not self.claps or now - self.claps[-1] > 0.15:
+                self.claps = [c for c in self.claps if now - c < 1.0] + [now]
+                if len(self.claps) >= 2 and 0.18 < self.claps[-1] - self.claps[-2] < 0.75:
+                    self.claps = []; self.activate()
+        else:
+            self.quiet = 0.97 * self.quiet + 0.03 * rms
+
+    # ---------------- grabar el pedido ----------------
+    def activate(self, follow=False):
+        """Empieza a grabar el pedido YA (sin hablar antes: si Mate habla, se pisa con lo que decís).
+        follow=True: modo conversación, después de que Mate respondió."""
+        log("activado (siguiendo la charla)" if follow else "activado (escuchando pedido)")
+        self.rec.Reset(); self.utter = []
+        self.capture = {"buf": list(getattr(self, "pre", [])[-3:]), "speech": False, "silence": 0,
+                        "t0": time.time(), "follow": follow}
+        try: self.on_listening(follow)
+        except TypeError: self.on_listening()
+
+    def _capture_step(self, s):
+        c = self.capture
+        rms = float(np.sqrt((s ** 2).mean()))
+        loud = rms > max(0.012, self.quiet * 3)
+        if loud and not c["speech"]:
+            c["buf"] = list(self.pre[:-1])                    # suma lo que vino justo antes
+        if loud: c["speech"], c["silence"] = True, 0
+        elif c["speech"]: c["silence"] += 1
+        if c["speech"]: c["buf"].append(s)
+        waited = time.time() - c["t0"]
+        wait_start = 5 if c.get("follow") else 8           # cuánto espera a que empieces a hablar
+        if (c["speech"] and c["silence"] >= 8) or waited > 14 or (not c["speech"] and waited > wait_start):
+            audio = np.concatenate(c["buf"]) if c["speech"] and c["buf"] else None
+            follow = c.get("follow")
+            self.capture = None; self.rec.Reset(); self.utter = []
+            threading.Thread(target=self._finish_capture, args=(audio, follow), daemon=True).start()
+
+    MULETILLAS = {"ah", "eh", "em", "mm", "mmm", "no", "sí", "si", "este", "bueno", "o", "y", "a", "la", "el",
+                  "ok", "okay", "uh", "ay", "che", "gracias", "chau", "nada"}
+
+    def _finish_capture(self, audio, follow=False):
+        if audio is None:                                  # no dijiste nada: vuelve tranquilo
+            log("sin voz", "(fin de la charla)" if follow else "")
+            if self.on_heard and not follow: self.on_heard(None)
+            return
+        t0 = time.time()
+        text = self.transcribe(audio)
+        log("whisper (pedido):", repr(text), "dur", round(len(audio) / self.RATE, 1), f"tardó {time.time() - t0:.1f}s")
+        if text and self._has_wake(text): text = self._after_wake(text) or text
+        words = re.sub(r"[^\w ]", "", (text or "").lower()).split()
+        real = [w for w in words if w not in self.MULETILLAS]
+        if text and (len(words) >= 2 and real or len(real) >= 1 and len(real[0]) > 3):
+            self._deliver(text)
+        elif self.on_heard and not follow:
+            self.on_heard(None)   # no entendió nada: no ejecuta ruido
+
+    def _deliver(self, cmd):
+        log("PEDIDO:", cmd)
+        self.on_command(cmd)
