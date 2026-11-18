@@ -48,6 +48,7 @@ if [ ! -d "$DATA/vosk-es" ]; then
   unzip -q "$DATA/vosk.zip" -d "$DATA" && mv "$DATA/vosk-model-small-es-0.42" "$DATA/vosk-es" && rm "$DATA/vosk.zip"
 fi
 "$VENV/bin/python" -c "from faster_whisper import WhisperModel; WhisperModel('small', device='cpu', compute_type='int8')"
+"$VENV/bin/python" -c "import onnx_asr; onnx_asr.load_model('nemo-parakeet-tdt-0.6b-v3', quantization='int8')"
 
 echo "6/8 Voces de Mate (Piper, en espanol)..."
 mkdir -p "$DATA/voces"

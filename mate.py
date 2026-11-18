@@ -1010,6 +1010,22 @@ class Agent:
 
 
 # ======================= arranque =======================
+def _cerrar_copias_viejas():
+    """Una sola copia de Mate: si había otra abierta (o trabada), la cierra antes de arrancar.
+    Así, volver a abrir Mate (o reinstalarlo) siempre arregla una copia colgada."""
+    try:
+        import psutil
+        me = os.getpid()
+        for p in psutil.process_iter(["pid", "cmdline"]):
+            cmd = " ".join(p.info["cmdline"] or [])
+            if p.info["pid"] != me and "mate.py" in cmd and "python" in cmd.lower():
+                p.kill()
+    except Exception:
+        pass
+
+
 if __name__ == "__main__":
+    _cerrar_copias_viejas()
+    if "--cerrar" in sys.argv: sys.exit(0)        # "Cerrar Mate" del menú Inicio
     from mate_ui import WebUI
     WebUI(Agent, Speaker, Listener, CFG, WAKE, NAME).start()

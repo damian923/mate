@@ -1,6 +1,6 @@
 """Interfaz moderna de Mate: ventana web (WebView2) con forma de notch arriba de la pantalla
 que se despliega en un panel. Corre todo local; el HTML está en ui/mate.html."""
-import ctypes, datetime as dt, json, subprocess, sys, threading, time, uuid
+import ctypes, datetime as dt, json, os, subprocess, sys, threading, time, uuid
 from ctypes import wintypes
 from pathlib import Path
 
@@ -756,6 +756,11 @@ class Api:
                 ui.show(f"✗ No pude conectar Spotify. {msg[:140]}", speak=False)
             ui.push()
         threading.Thread(target=work, daemon=True).start()
+
+    def quit(self):
+        """Cierra Mate del todo (ventana, micrófono y todo)."""
+        from mate_audio import log; log("cerrado por el usuario")
+        threading.Timer(0.3, lambda: os._exit(0)).start()
 
     def open_url(self, url):
         import webbrowser

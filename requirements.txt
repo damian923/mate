@@ -23,3 +23,4 @@ winrt-Windows.Foundation; sys_platform == "win32"
 # Solo Mac
 pyobjc-framework-Cocoa; sys_platform == "darwin"
 pyobjc-framework-Quartz; sys_platform == "darwin"
+onnx-asr[cpu,hub]

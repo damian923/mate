@@ -353,6 +353,7 @@ kbd{font:600 10.5px var(--mono);opacity:.7}
       <button data-v="mipc">Mi PC</button>
       <button data-v="memoria">Memoria</button>
       <button data-v="ajustes">Ajustes</button>
+      <button onclick="event.stopPropagation();openModal({id:'_quit',kind:'confirm',title:'¿Cierro Mate?',text:'Se cierra del todo. Para abrirlo de nuevo: menú Inicio → Mate (o se abre solo al prender la compu).',ok:'Cerrar Mate'})" style="color:#d66a52">Cerrar Mate</button>
     </div>
     <button class="close" onclick="api('collapse')" title="Cerrar (Esc)"><svg width="13" height="13" viewBox="0 0 14 14"><path d="M3 3l8 8M11 3l-8 8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button>
 
@@ -1071,6 +1072,7 @@ function answer(v){
   if(modalId==="_hab"){ if(v){ const p=v.trim().split(/\s+/); const g=+p[p.length-1]; const n=isNaN(g)?v:p.slice(0,-1).join(" "); api("habit_add",n,isNaN(g)?1:g);} return; }
   if(modalId==="_disc"){ if(v) api("google_disconnect", modalData.alias); return; }
   if(modalId==="_trash"){ if(v) doFileAct("trash"); return; }
+  if(modalId==="_quit"){ if(v) api("quit"); return; }
   api("answer", modalId, v);
 }
 
