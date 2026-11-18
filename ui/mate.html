@@ -930,7 +930,7 @@ function cityHide(id, save){
 function geminiBlock(c){
   const on = c.gemini_on;
   return `<div class="set" style="align-items:flex-start"><div><b>Entender la voz con Gemini</b>
-    <small>${on?"Activado: te entiende como un humano y responde en 1 o 2 segundos.":"Opcional. Sacá una clave gratis en <a href='#' onclick=\"api('open_url','https://aistudio.google.com/apikey');return false\">aistudio.google.com/apikey</a> y pegala acá. Sólo se manda el audio de lo que le pedís después de decir “Mate”."}</small>
+    <small>${on?"Activado: te entiende como un humano y responde en 1 o 2 segundos.":"Opcional. Sacá una clave gratis en <a href='#' style='color:var(--cuero, #C48A57)' onclick=\"api('open_url','https://aistudio.google.com/apikey');return false\">aistudio.google.com/apikey</a> y pegala acá. Sólo se manda el audio de lo que le pedís después de decir “Mate”."}</small>
     <div id="gemRes" class="muted" style="font-size:12px;margin-top:6px"></div></div>
     ${on?`<button class="btn ghost" onclick="gemSet('')">Desactivar</button>`
         :`<div style="display:flex;gap:6px"><input id="gemKey" class="inp" type="password" placeholder="Pegá tu clave" style="max-width:170px"><button class="btn ghost" onclick="gemSet($('gemKey').value)">Activar</button></div>`}</div>`;

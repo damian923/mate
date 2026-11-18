@@ -739,9 +739,11 @@ class Api:
         if not key:
             self.cfg("gemini_key", ""); return {"ok": True, "msg": "Voz local (sin Gemini)"}
         import mate_gemini as G
-        ok, err = G.check_key(key, self._ui.cfg.get("gemini_model"))
-        if ok: self.cfg("gemini_key", key)
-        return {"ok": ok, "msg": "✓ Gemini conectado: ahora te entiende como un humano" if ok else f"✗ {err}"}
+        ok, err, models = G.check_key(key)         # el mejor modelo primero, después los de respaldo
+        if not ok: return {"ok": False, "msg": f"✗ {err}"}
+        self.cfg("gemini_model", models); self.cfg("gemini_key", key)
+        nota = " (ahora Google está saturado: si tarda, uso los de respaldo o la voz local)" if err == "saturado" else ""
+        return {"ok": True, "msg": f"✓ Gemini conectado ({models[0]}){nota}"}
 
     def spotify_disconnect(self):
         from mate_servicios import Spotify
