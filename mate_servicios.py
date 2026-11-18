@@ -172,19 +172,21 @@ class Gmail:
         if not m: raise RuntimeError(f"No conozco la cuenta '{alias}'. Tengo: {', '.join(accs)}")
         return m
 
-    def unread(self, alias=None, n=5):
-        """Devuelve [(alias, id, de, asunto, resumen)] de todas o una cuenta."""
+    def unread(self, alias=None, n=5, q="is:unread in:inbox -category:promotions -category:social "
+                                         "-category:updates -category:forums"):
+        """Devuelve [{account, id, from, subject, snippet, ts}] de todas o una cuenta."""
         out = []
         for acc in self._pick(alias):
             s = self._svc(acc)
-            ids = s.users().messages().list(userId="me", q="is:unread in:inbox category:primary", maxResults=n).execute()
+            ids = s.users().messages().list(userId="me", q=q, maxResults=n).execute()
             for m in ids.get("messages", []):
                 msg = s.users().messages().get(userId="me", id=m["id"], format="metadata",
                                                metadataHeaders=["From", "Subject"]).execute()
                 h = {x["name"]: x["value"] for x in msg["payload"]["headers"]}
                 out.append({"account": acc, "id": m["id"], "thread": msg["threadId"],
                             "from": h.get("From", ""), "subject": h.get("Subject", "(sin asunto)"),
-                            "snippet": html.unescape(msg.get("snippet", ""))})
+                            "snippet": html.unescape(msg.get("snippet", "")),
+                            "ts": int(msg.get("internalDate", 0)) / 1000, "unread": "UNREAD" in msg.get("labelIds", [])})
         return out
 
     def send(self, mail, body, draft_only=False):

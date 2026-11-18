@@ -2,7 +2,7 @@
 Mate - asistente de escritorio 100% local (Windows).
 IA: Ollama (llama3.2:3b por defecto). Voz: Vosk + pyttsx3 (offline). Doble aplauso para activar.
 """
-import difflib, json, os, shutil, sys, threading, time, uuid, datetime as dt
+import difflib, json, os, shutil, subprocess, sys, threading, time, uuid, datetime as dt
 from pathlib import Path
 if sys.stdout is None: sys.stdout = open(os.devnull, "w")   # con pythonw no hay consola: que las librerías
 if sys.stderr is None: sys.stderr = open(os.devnull, "w")   # que imprimen progreso no se caigan
@@ -127,7 +127,32 @@ Lo que sabés del usuario:
 {memory}"""
 
 
+_ollama_ok = 0
+
+
+def ensure_ollama():
+    """Si Ollama (la IA local) está apagado, lo prende y espera a que responda (hasta ~20 s)."""
+    global _ollama_ok
+    if time.time() - _ollama_ok < 60: return
+    base = OLLAMA.split("/api/")[0]
+    def up():
+        try: urllib.request.urlopen(base + "/api/tags", timeout=2).read(); return True
+        except Exception: return False
+    if not up():
+        log("ollama: estaba apagado, lo prendo")
+        try:
+            if sv.IS_MAC: subprocess.Popen(["brew", "services", "start", "ollama"])
+            else: subprocess.Popen(["ollama", "serve"], creationflags=0x08000000)
+        except Exception as e:
+            log(f"ollama: no pude prenderlo ({e})"); return
+        for _ in range(20):
+            time.sleep(1)
+            if up(): break
+    _ollama_ok = time.time()
+
+
 def llm(messages, as_json=True, temp=0.2):
+    ensure_ollama()
     body = {"model": MODEL, "messages": messages, "stream": False, "keep_alive": "2h",
             "options": {"temperature": temp, "num_ctx": 4096, "num_predict": 90 if as_json else 160}}
     if as_json: body["format"] = "json"
@@ -139,6 +164,7 @@ def llm(messages, as_json=True, temp=0.2):
 def ask_long(prompt, system="Respondé en español rioplatense, claro y concreto.", max_tokens=500, temp=0.2):
     """Para textos largos (reuniones, documentos): Qwen3.5 2B de Unsloth, 262K de contexto.
     Se carga solo cuando hace falta y se descarga a los 3 minutos para liberar memoria."""
+    ensure_ollama()
     msgs = [{"role": "system", "content": system}, {"role": "user", "content": prompt}]
     need = int(len(prompt) / 3) + max_tokens + 512
     ctx = 16384 if need <= 16384 else 65536          # tamaños fijos: así no recarga el modelo cada vez
@@ -716,10 +742,19 @@ class Agent:
         return self.do_meeting_tasks({})
 
     def do_meeting_tasks(self, a):
-        import mate_control as C, re as _re
-        title, body = C.granola_read_note(a.get("meeting"))
-        if not body:
-            time.sleep(2); title, body = C.granola_read_note(a.get("meeting"))   # Granola a veces tarda en cambiar de pantalla
+        import mate_control as C, mate_granola as GA, re as _re
+        title, body = None, None
+        if GA.has_key():   # con la API de Granola: se lee de internet, sin abrir la ventana
+            try:
+                title, body = GA.latest_note(a.get("meeting"))
+                log(f"granola api: {'leí ' + repr(title) if body else 'todavía sin nota'}")
+            except Exception as e:
+                log(f"granola api: {e}")
+        if not body and not GA.has_key():
+            title, body = C.granola_read_note(a.get("meeting"))
+            if not body:
+                time.sleep(2); title, body = C.granola_read_note(a.get("meeting"))   # Granola a veces tarda en cambiar de pantalla
+            log(f"granola ventana: {'leí ' + repr(title) if body else 'no pude leer la nota'}")
         if not body: return "✗ No pude leer la nota de Granola"
         import mate_servicios
         me = (mate_servicios.config().get("user_name") or "").strip() or "yo"
@@ -739,7 +774,9 @@ class Agent:
                       f"Extraé SOLO las tareas o compromisos asignados a {me} (el usuario). Ignorá las de otras personas. "
                       "Fecha SOLO si se menciona un día o plazo. "
                       'Respondé SOLO JSON: {"tareas":[{"texto":"verbo en infinitivo + qué","fecha":"YYYY-MM-DD o vacío"}]}')
+        log(f"tareas: le pido a la IA que saque las tuyas ({len(mias)} líneas te nombran)")
         out = ask_long(prompt, "Extraés tareas de reuniones. Respondés solo JSON válido.", max_tokens=600, temp=0)
+        log(f"tareas: la IA respondió ({len(out or '')} caracteres)")
         m = _re.search(r"\{.*\}", out, _re.S)
         try: tareas = json.loads(m.group(0))["tareas"] if m else []
         except Exception: tareas = []
@@ -845,6 +882,12 @@ class Agent:
         if not sv.IS_MAC:
             import comtypes; comtypes.CoInitialize()
         on, off_since, mine = 0, None, False
+        # Si Mate se reinició mientras Granola grababa, lo retoma (antes un reinicio te dejaba sin tareas)
+        rec_prev = self.d.get("granola_rec")
+        if rec_prev and time.time() - rec_prev < 4 * 3600:
+            mine = True
+            self.ui.recording = {"title": "Granola está grabando", "since": rec_prev}
+            log("granola: retomo una grabación de antes del reinicio")
         while True:
             time.sleep(4)          # chequeo liviano (no toca Granola): mira si tiene el micrófono activo
             try: rec = C.granola_capturing()
@@ -852,10 +895,13 @@ class Agent:
                 log(f"granola watch: {e}"); time.sleep(10); continue
             if rec:
                 on += 1; off_since = None
-                if on >= 2 and self.ui.recording: mine = True   # la arrancó Mate: igual sigo su final
+                if on >= 2 and self.ui.recording:                 # la arrancó Mate: igual sigo su final
+                    if not mine: self.d["granola_rec"] = time.time(); save(self.d)
+                    mine = True
                 elif on == 2:                                     # ~8 s seguidos grabando: es una reunión
                     mine = True
                     self.ui.recording = {"title": "Granola está grabando", "since": time.time() - 8}
+                    self.d["granola_rec"] = time.time() - 8; save(self.d)
                     self.ui.notch("Veo que Granola está grabando. Al terminar te busco tus tareas", "", 5)
                     log("granola: empezó a grabar")
             else:
@@ -864,6 +910,7 @@ class Agent:
                     off_since = off_since or time.time()
                     if time.time() - off_since > 16:      # ~16 s sin micrófono: terminó (no un corte de un segundo)
                         mine = False; off_since = None; self.ui.recording = None
+                        self.d.pop("granola_rec", None); save(self.d)
                         log("granola: terminó la grabación")
                         self.ui.notch("Terminó la reunión: te busco tus tareas en Granola", "think", 10)
                         self.ui.background(self._tasks_when_ready)
@@ -927,28 +974,31 @@ class Agent:
         return score
 
     def _mail_watch(self):
+        """Avisa de los mails que llegaron desde el último chequeo. Usa la HORA de llegada (guardada en disco),
+        así un reinicio de Mate no se 'come' los mails, y avisa aunque ya lo hayas abierto en el celular."""
         try:
-            new = self.gmail.unread(n=10)
-            seen = set(self.d.get("seen_mails", []))
-            fresh = [m for m in new if m["id"] not in seen]
-            self.d["seen_mails"] = list(seen | {m["id"] for m in new})[-300:]
-            if not (fresh and seen): return
-            nivel = CFG.get("mail_nivel", "importantes")     # todos | importantes | nada
+            # "category:primary" no anda en todas las cuentas por la API: excluyo las otras pestañas
+            new = self.gmail.unread(n=10, q="in:inbox newer_than:1d -category:promotions -category:social "
+                                            "-category:updates -category:forums")
+            desde = self.d.get("mail_mark") or (time.time() - 15 * 60)   # primera vez: los últimos 15 min
+            avisados = set(self.d.get("seen_mails", []))
+            fresh = [m for m in new if m["ts"] > desde and m["id"] not in avisados]
+            if new: self.d["mail_mark"] = max([desde] + [m["ts"] for m in new])
+            self.d["seen_mails"] = list(avisados | {m["id"] for m in fresh})[-300:]
+            save(self.d)
+            log(f"mails: {len(new)} recientes, {len(fresh)} nuevos")
+            if not fresh: return
+            nivel = sv.config().get("mail_nivel", "importantes")     # todos | importantes | nada (lo de Ajustes)
             if nivel == "nada": return
             top = sorted(fresh, key=self.mail_score, reverse=True)
             if nivel == "importantes": top = [m for m in top if self.mail_score(m) >= 2]
             if not top: return
             m = top[0]
             quien = m["from"].split("<")[0].strip().strip('"')
-            try:
-                resumen = ask(f"Resumí en una frase corta (máx 12 palabras) este mail para un aviso:\nDe: {quien}\n"
-                              f"Asunto: {m['subject']}\n{m['snippet']}")
-            except Exception:
-                resumen = m["subject"]
             extra = f" (+{len(top) - 1} más)" if len(top) > 1 else ""
-            self.ui.alert(f"✉ {quien}: {resumen.strip()[:90]}{extra}", False)
-        except Exception:
-            pass
+            self.ui.alert(f"✉ {quien}: {m['subject'][:80]}{extra}", True)   # al instante, sin esperar a la IA
+        except Exception as e:
+            log(f"mails: error {e}")
 
 
 # ======================= arranque =======================

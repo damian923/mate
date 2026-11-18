@@ -935,6 +935,19 @@ function geminiBlock(c){
     ${on?`<button class="btn ghost" onclick="gemSet('')">Desactivar</button>`
         :`<div style="display:flex;gap:6px"><input id="gemKey" class="inp" type="password" placeholder="Pegá tu clave" style="max-width:170px"><button class="btn ghost" onclick="gemSet($('gemKey').value)">Activar</button></div>`}</div>`;
 }
+function granolaBlock(c){
+  const on = c.granola_on;
+  return `<div class="set" style="align-items:flex-start"><div><b>Granola sin abrir la ventana</b>
+    <small>${on?"Conectado: leo tus notas por internet, sin que se abra Granola.":"Opcional (plan Business de Granola). En Granola: Ajustes → Connectors → API keys, creá una y pegala acá. Sin clave, Mate abre Granola un momento para leer la nota."}</small>
+    <div id="graRes" class="muted" style="font-size:12px;margin-top:6px"></div></div>
+    ${on?`<button class="btn ghost" onclick="graSet('')">Desconectar</button>`
+        :`<div style="display:flex;gap:6px"><input id="graKey" class="inp" type="password" placeholder="grn_…" style="max-width:170px"><button class="btn ghost" onclick="graSet($('graKey').value)">Conectar</button></div>`}</div>`;
+}
+async function graSet(k){
+  $("graRes") && ($("graRes").textContent = k ? "Probando la clave…" : "");
+  const r = await api('granola_set', k);
+  if (r && $("graRes")) $("graRes").textContent = r.msg;
+}
 async function gemSet(k){
   $("gemRes") && ($("gemRes").textContent = k ? "Probando la clave…" : "");
   const r = await api('gemini_set', k);
@@ -979,7 +992,7 @@ function renderSettings(){
   const vs=(c.voices||[]).map(v=>`<option value="${v.id}" ${v.id===(c.voice_id||"es_AR-daniela-high")?"selected":""}>${esc(v.name)}</option>`).join("");
   const lvl=(k,opts,cur)=>`<div class="lvl">${opts.map(([v,t,d])=>`<div class="${cur===v?"on":""}" onclick="api('cfg','${k}','${v}')"><b>${t}</b>${d}</div>`).join("")}</div>`;
   $("setList").innerHTML =
-    `<div class="lbl">Cuentas</div>` + googleBlock() + spotifyBlock() + geminiBlock(c) +
+    `<div class="lbl">Cuentas</div>` + googleBlock() + spotifyBlock() + geminiBlock(c) + granolaBlock(c) +
     `<div class="set"><div><b>Tu nombre</b><small>Para saludarte y encontrar tus tareas en las notas de reunión</small></div><input class="inp" style="max-width:160px" value="${esc(c.user_name||S.name||"")}" onchange="api('cfg','user_name',this.value.trim())"></div>` +
     `<div class="set" style="align-items:flex-start"><div><b>Tu ciudad</b><small>Para el clima. Vacía = automática según tu conexión</small></div>${cityPicker("setCity", c.ciudad||"", true)}</div>` +
     `<div class="lbl">Personalidad</div>` + lvl("argentinidad",[["sobrio","Sobrio","“Agendado.”"],["normal","Normal","“Dale, anotado para el jueves.”"],["alto","Con todo","“¡Joya! Quedó para el jueves 🧉”"]],c.argentinidad||"normal") +

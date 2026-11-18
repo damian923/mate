@@ -240,6 +240,7 @@ class WebUI:
                                             "gestos", "toque", "ojos", "desktop", "mail_nivel", "tema", "ciudad")}
         cfg["voices"] = voices()
         cfg["gemini_on"] = bool((self.cfg.get("gemini_key") or "").strip())   # la clave nunca viaja a la página
+        cfg["granola_on"] = bool((self.cfg.get("granola_key") or "").strip())
         return {"tasks": d["tasks"], "habits": habits, "memory": d["memory"],
                 "reminders": [{"time": dt.datetime.fromtimestamp(r["ts"]).strftime("%H:%M"), "text": r["text"]} for r in rem],
                 "focus": focus, "focus_stats": stats, "accounts": a.gmail.accounts(),
@@ -732,6 +733,16 @@ class Api:
     def open_url(self, url):
         import webbrowser
         if url.startswith("https://"): webbrowser.open(url)
+
+    def granola_set(self, key):
+        """Clave de la API de Granola: Mate lee las notas sin abrir la ventana. Vacía = usa la ventana."""
+        key = (key or "").strip()
+        if not key:
+            self.cfg("granola_key", ""); return {"ok": True, "msg": "Leo Granola desde su ventana"}
+        import mate_granola as GA
+        ok, err = GA.check(key)
+        if ok: self.cfg("granola_key", key)
+        return {"ok": ok, "msg": "✓ Granola conectado: leo tus notas sin abrir la ventana" if ok else f"✗ {err}"}
 
     def gemini_set(self, key):
         """Guarda la clave de Gemini si funciona. Vacía = vuelve a la voz 100% local."""
