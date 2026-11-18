@@ -137,6 +137,10 @@ class Listener:
 
     def feed(self, data):
         """Procesa 100 ms de audio (int16). Lo usa el micrófono y también las pruebas."""
+        # El reconocedor de Vosk sólo se toca desde este hilo (el del micrófono): si otro hilo lo
+        # reinicia mientras se usa, la librería se cae (y se cerraba Mate). Los otros hilos sólo piden el reset.
+        if getattr(self, "_reset_req", False):
+            self._reset_req = False; self.rec.Reset(); self._hinted = False
         if self.speaker.speaking:          # no escucharse a sí mismo
             self.rec.Reset(); self.utter = []; return
         s = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768
@@ -228,7 +232,7 @@ class Listener:
         """Empieza a grabar el pedido YA (sin hablar antes: si Mate habla, se pisa con lo que decís).
         follow=True: modo conversación, después de que Mate respondió."""
         log("activado (siguiendo la charla)" if follow else "activado (escuchando pedido)")
-        self.rec.Reset(); self.utter = []
+        self._reset_req = True; self.utter = []   # el reset lo hace el hilo del micrófono (ver feed)
         self.capture = {"buf": list(getattr(self, "pre", [])[-3:]), "speech": False, "silence": 0,
                         "t0": time.time(), "follow": follow}
         try: self.on_listening(follow)
