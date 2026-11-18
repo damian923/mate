@@ -164,6 +164,14 @@ def llm(messages, as_json=True, temp=0.2):
 def ask_long(prompt, system="Respondé en español rioplatense, claro y concreto.", max_tokens=500, temp=0.2):
     """Para textos largos (reuniones, documentos): Qwen3.5 2B de Unsloth, 262K de contexto.
     Se carga solo cuando hace falta y se descarga a los 3 minutos para liberar memoria."""
+    key = (sv.config().get("gemini_key") or "").strip()
+    if key:   # con Gemini (autorizado por el usuario): segundos en vez de minutos
+        try:
+            import mate_gemini as G
+            out = G.complete(key, sv.config().get("gemini_model"), system, prompt, max_tokens)
+            if out: return out
+        except Exception as e:
+            log(f"gemini largo: {e} (uso la IA local)")
     ensure_ollama()
     msgs = [{"role": "system", "content": system}, {"role": "user", "content": prompt}]
     need = int(len(prompt) / 3) + max_tokens + 512

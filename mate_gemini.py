@@ -29,11 +29,11 @@ def wav_b64(audio, rate=16000):
     return base64.b64encode(buf.getvalue()).decode()
 
 
-def _call(key, model, system, parts, timeout=20):
+def _call(key, model, system, parts, timeout=20, max_out=400):
     body = {
         "system_instruction": {"parts": [{"text": system}]},
         "contents": [{"role": "user", "parts": parts}],
-        "generationConfig": {"responseMimeType": "application/json", "temperature": 0.1, "maxOutputTokens": 400,
+        "generationConfig": {"responseMimeType": "application/json", "temperature": 0.1, "maxOutputTokens": max_out,
                              "thinkingConfig": {"thinkingBudget": 0}},   # sin "pensar": respuesta inmediata
     }
     import urllib.error
@@ -68,6 +68,14 @@ def understand_text(key, text, system, history=None, model=None):
     ctx = "\n".join(f"{m['role']}: {m['content']}" for m in (history or [])[-6:])
     parts = ([{"text": "Conversación reciente:\n" + ctx}] if ctx else []) + [{"text": text}]
     return call_any(key, _models(model), system, parts)
+
+
+def complete(key, model, system, prompt, max_tokens=600):
+    """Texto largo (notas de una reunión) -> respuesta. Devuelve el texto tal cual (puede ser JSON)."""
+    out = call_any(key, _models(model), system + '\nRespondé con un JSON {"text": "<tu respuesta>"}.',
+                   [{"text": prompt}], max_out=max_tokens + 200)
+    t = out.get("text", "")
+    return t if isinstance(t, str) else json.dumps(t, ensure_ascii=False)
 
 
 def _models(model):
@@ -120,9 +128,7 @@ def check_key(key):
     return False, f"Google respondió {ultimo}", None
 
 
-def call_any(key, models, system, parts):
-    """Prueba los modelos en orden: si uno está saturado pasa al siguiente."""
-    import urllib.error, socket
+def call_any(key, models, system, parts, max_out=400):
     """Le pregunta a los modelos EN PARALELO y se queda con la primera respuesta buena: si Google tiene
     uno saturado (tarda o da 503), otro contesta. Como mucho ~12 s; después Mate usa la voz local."""
     global _LAST_OK
@@ -131,12 +137,13 @@ def call_any(key, models, system, parts):
     if _LAST_OK in models: models.remove(_LAST_OK); models.insert(0, _LAST_OK)
     q = queue.Queue()
     def one(m):
-        try: q.put((m, _call(key, m, system, parts, timeout=12), None))
+        try: q.put((m, _call(key, m, system, parts, timeout=20, max_out=max_out), None))
         except Exception as e: q.put((m, None, e))
     for m in models[:3]: threading.Thread(target=one, args=(m,), daemon=True).start()
     err, t0 = None, time.time()
+    limite = 12.5 if max_out <= 400 else 30     # textos largos (notas de reunión) pueden tardar más
     for _ in range(min(3, len(models))):
-        try: m, out, e = q.get(timeout=max(0.5, 12.5 - (time.time() - t0)))
+        try: m, out, e = q.get(timeout=max(0.5, limite - (time.time() - t0)))
         except queue.Empty: break
         if out is not None:
             _LAST_OK = m; return out
