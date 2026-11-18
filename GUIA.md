@@ -5,7 +5,14 @@ Abrí **PowerShell** (tecla Windows, escribí "PowerShell", Enter), pegá esta l
 
     irm https://raw.githubusercontent.com/damian923/mate/main/instalar.ps1 | iex
 
-Necesitás Windows 10/11, unos 8 GB de RAM y ~6 GB libres. Si ya tenés la carpeta de Mate, también sirve doble click en **INSTALAR.bat**.
+**En Mac:** abrí **Terminal** (Cmd+Espacio, escribí "Terminal", Enter), pegá esta línea y apretá Enter:
+
+    curl -fsSL https://raw.githubusercontent.com/damian923/mate/main/instalar.sh | bash
+
+Si no tenés Homebrew te pide la contraseña de la Mac para instalarlo. La primera vez que Mate arranca, macOS pide
+permisos de **Micrófono**, **Accesibilidad** y **Automatización**: aceptá los tres (Ajustes del Sistema → Privacidad y seguridad).
+
+Necesitás Windows 10/11 o macOS 12+, unos 8 GB de RAM y ~6 GB libres. Si ya tenés la carpeta de Mate, también sirve doble click en **INSTALAR.bat**.
 Instala Python, Ollama, los dos modelos de IA,
 las librerías, el reconocimiento de voz y las voces, y deja a Mate **arrancando solo al prender la compu**.
 Para abrirlo a mano: `pythonw mate.py`. Tus datos y la configuración están en `C:\Users\<vos>\.mate\`.

@@ -6,6 +6,14 @@ from pathlib import Path
 DATA_DIR = Path.home() / ".mate"
 CONFIG = DATA_DIR / "config.json"
 APP_DIR = Path(__file__).resolve().parent
+import mate_mac as mac
+IS_MAC = mac.IS_MAC
+
+
+def open_uri(uri):
+    """Abre un link de app (spotify:, slack://, whatsapp:) en Windows o Mac."""
+    if IS_MAC: mac.open_uri(uri)
+    else: os.startfile(uri)
 
 
 def config():
@@ -199,6 +207,10 @@ VK = {"playpause": 0xB3, "next": 0xB0, "prev": 0xB1, "vol_up": 0xAF, "vol_down":
 
 
 def media_key(name, times=1):
+    if IS_MAC:
+        if name in ("playpause", "next", "prev"): mac.media(name)
+        else: mac.volume({"vol_up": "up", "vol_down": "down", "mute": "mute"}[name], times)
+        return
     for _ in range(times):
         ctypes.windll.user32.keybd_event(VK[name], 0, 0, 0)
         ctypes.windll.user32.keybd_event(VK[name], 0, 2, 0)
@@ -239,7 +251,7 @@ class Spotify:
 
     def play(self, query, kind="track"):
         if not self.sp:
-            os.startfile("spotify:search:" + urllib.parse.quote(query))
+            open_uri("spotify:search:" + urllib.parse.quote(query))
             return f"Abrí Spotify buscando '{query}'. Para que lo reproduzca solo, configurá la API (ver GUIA.md)"
         kind = kind if kind in ("track", "artist", "album", "playlist") else "track"
         res = self.sp.search(q=query, type=kind, limit=1)[kind + "s"]["items"]
@@ -248,7 +260,8 @@ class Spotify:
         devices = self.sp.devices()["devices"]
         if not devices:   # Spotify cerrado: lo abre y espera a que aparezca como dispositivo
             import time, subprocess
-            subprocess.Popen(["cmd", "/c", "start", "/min", "", "spotify:"], creationflags=0x08000000)
+            if IS_MAC: mac.open_background("spotify:")
+            else: subprocess.Popen(["cmd", "/c", "start", "/min", "", "spotify:"], creationflags=0x08000000)
             for _ in range(15):
                 time.sleep(1)
                 devices = self.sp.devices()["devices"]
@@ -283,6 +296,8 @@ class Apps:
 
     def refresh(self):
         idx = {}
+        if IS_MAC:
+            self.index = {k: ("mac", v) for k, v in mac.list_apps().items()}; return
         for base in [Path(os.environ.get("ProgramData", "")) / "Microsoft/Windows/Start Menu/Programs",
                      Path(os.environ.get("APPDATA", "")) / "Microsoft/Windows/Start Menu/Programs",
                      Path.home() / "Desktop"]:
@@ -311,7 +326,8 @@ class Apps:
         if not hit:
             raise RuntimeError(f"No encontré '{name}' instalado")
         kind, target = self.index[hit]
-        if kind == "lnk": os.startfile(target)
+        if kind == "mac": subprocess.Popen(["open", "-a", target])
+        elif kind == "lnk": os.startfile(target)
         else: subprocess.Popen(["explorer.exe", f"shell:AppsFolder\\{target}"])
         return hit
 
@@ -385,14 +401,17 @@ def web_snippets(query, n=6):
 
 # ============ Sistema ============
 def volume(direction, steps=5):
+    if IS_MAC: return mac.volume(direction, steps)
     media_key({"up": "vol_up", "down": "vol_down", "mute": "mute"}[direction], 1 if direction == "mute" else steps)
 
 
 def lock_pc():
+    if IS_MAC: return mac.lock()
     ctypes.windll.user32.LockWorkStation()
 
 
 def clipboard_text():
+    if IS_MAC: return mac.clipboard_get().strip()
     return subprocess.run(["powershell", "-NoProfile", "-Command", "Get-Clipboard -Raw"],
                           capture_output=True, text=True, timeout=10, creationflags=0x08000000).stdout.strip()
 

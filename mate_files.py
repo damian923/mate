@@ -89,7 +89,8 @@ def convert(p, fmt):
     if p.suffix.lower() == ".docx" and fmt == "PDF":
         dst = _free(p, ".pdf")
         try:
-            import pythoncom; pythoncom.CoInitialize()
+            import sys
+            if sys.platform == "win32": import pythoncom; pythoncom.CoInitialize()
             from docx2pdf import convert as d2p
             d2p(str(p), str(dst))
         except Exception as e:

@@ -491,3 +491,92 @@ def granola_read_current():
         return title, chr(10).join(texts)
     finally:
         _restore_focus(prev, True)
+
+
+# =========================== macOS ===========================
+# En Mac no hay UI Automation de Windows: se usa AppleScript + Accesibilidad (mate_mac).
+# Las funciones de arriba quedan para Windows; acá se reemplazan las que cambian.
+import sys as _sys
+if _sys.platform == "darwin":
+    import mate_mac as _mac
+
+    def spotify_play(query):
+        """Sin la API de Spotify: busca en la app y reproduce el primer resultado (Spotify acepta 'play track')."""
+        q = clean_music_query(query)
+        _mac.open_background("spotify:search:" + urllib.parse.quote(q)); time.sleep(3)
+        # Spotify en Mac no expone resultados por AppleScript: reproduce la búsqueda como radio de la canción
+        _mac.osa(f'tell application "Spotify" to play track "spotify:search:{urllib.parse.quote(q)}"')
+        np = _mac.now_playing()
+        return f"♫ {np['title']} – {np['artist']}" if np else f"Abrí Spotify buscando '{q}'"
+
+    def granola_capturing():
+        return _mac.granola_capturing()
+
+    def granola_record():
+        _mac.open_uri("granola://"); time.sleep(3); _mac.activate("Granola")
+        _mac.key("n", ("command",))            # nota nueva: Granola empieza a transcribir
+        return "✓ Granola está grabando una nota nueva"
+
+    def granola_stop():
+        _mac.activate("Granola")
+        for lbl in ("Stop", "Stop recording", "Pause", "Detener"):
+            try:
+                if _mac.granola_click(lbl): return "✓ Frené la grabación de Granola"
+            except Exception:
+                pass
+        return "✗ No encontré una grabación activa en Granola"
+
+    def granola_generate_notes(timeout=180):
+        return True   # en Mac Granola arma las notas solo al cortar
+
+    def granola_read_current():
+        txt = _mac.granola_text()
+        return ("Reunión", txt) if txt else (None, None)
+
+    def granola_read_note(title_hint=None, tries=3):
+        """Lee la nota abierta en Granola (la última reunión queda abierta al terminar)."""
+        _mac.activate("Granola"); time.sleep(1)
+        txt = _mac.granola_text()
+        if not txt: return None, None
+        lines = [l.strip() for l in re.split(r",\s(?=[A-ZÁÉÍÓÚ•\-])|\n", txt) if l.strip()]
+        title = lines[0] if lines else "Reunión"
+        if title_hint and title_hint.lower() not in txt.lower(): return None, None
+        return title, "\n".join(lines)
+
+    def app_click(app, label):
+        try:
+            _mac.activate(app)
+            ok = _mac.osa(f'tell application "System Events" to tell process {_mac._q(app)} to click '
+                          f'(first button of entire contents of front window whose name is {_mac._q(label)} or description is {_mac._q(label)})')
+            return f"✓ Apreté '{label}' en {app}"
+        except Exception:
+            return f"✗ No encontré '{label}' en {app}"
+
+    def app_type(app, text=None, keys=None):
+        _mac.activate(app)
+        if text: _mac.keystroke(text)
+        if keys:   # atajos estilo Windows (^n = Ctrl+N) pasan a Cmd en Mac
+            m = re.match(r"^\^(\w)$", keys)
+            if m: _mac.key(m.group(1), ("command",))
+            elif "{ENTER}" in keys: _mac.key("return")
+        return f"✓ Listo en {app}"
+
+    def slack_prepare(recipient, text, file=None):
+        _mac.chat_prepare("Slack", ("k", ("command",)), recipient, text, file)
+        return True, "listo para enviar"
+
+    def slack_send_now():
+        _mac.chat_send("Slack"); return "✓ Mensaje enviado por Slack"
+
+    def slack_discard():
+        _mac.chat_discard("Slack")
+
+    def whatsapp_prepare(recipient, text, file=None):
+        _mac.chat_prepare("WhatsApp", ("f", ("command",)), recipient, text, file)
+        return True, "listo para enviar"
+
+    def whatsapp_send_now():
+        _mac.chat_send("WhatsApp"); return "✓ Enviado por WhatsApp"
+
+    def whatsapp_discard():
+        _mac.chat_discard("WhatsApp")

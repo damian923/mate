@@ -8,14 +8,18 @@ pillow
 pywebview
 faster-whisper
 piper-tts
-pywinauto
 psutil
 pyttsx3
 send2trash
 pypdf
-winrt-runtime
-winrt-Windows.Media.Control
-winrt-Windows.Foundation
-pycaw
 pdf2docx
 docx2pdf
+# Solo Windows
+pywinauto; sys_platform == "win32"
+pycaw; sys_platform == "win32"
+winrt-runtime; sys_platform == "win32"
+winrt-Windows.Media.Control; sys_platform == "win32"
+winrt-Windows.Foundation; sys_platform == "win32"
+# Solo Mac
+pyobjc-framework-Cocoa; sys_platform == "darwin"
+pyobjc-framework-Quartz; sys_platform == "darwin"

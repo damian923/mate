@@ -15,6 +15,8 @@ DEFAULTS = {"ordenado": True, "capturas": True, "accesos": False, "alinear": Tru
 
 def desktop():
     """La carpeta real del escritorio (puede estar en OneDrive)."""
+    import sys
+    if sys.platform == "darwin": return Path.home() / "Desktop"
     try:
         out = subprocess.run(["powershell", "-NoProfile", "-Command", "[Environment]::GetFolderPath('Desktop')"],
                              capture_output=True, text=True, timeout=10, creationflags=0x08000000).stdout.strip()
@@ -31,7 +33,7 @@ def plan(opts=None):
     root = Path("Ordenado") if o["ordenado"] else Path(".")
     out = []
     for f in base.iterdir():
-        if not f.is_file() or f.name.lower() == "desktop.ini" or f.name.startswith("~$"):
+        if not f.is_file() or f.name.lower() in ("desktop.ini", ".ds_store", ".localized") or f.name.startswith(("~$", ".")):
             continue
         ext = f.suffix.lower()
         if ext in ACCESOS:
@@ -76,6 +78,14 @@ def undo(moved):
 
 def align_icons():
     """Alinea los íconos del escritorio en columnas desde arriba a la izquierda (como 'Organizar automáticamente')."""
+    import sys
+    if sys.platform == "darwin":   # Finder: "Ordenar por > Clase" (acomoda los íconos del escritorio)
+        try:
+            import mate_mac
+            mate_mac.osa('tell application "Finder" to set arrangement of icon view options of window of desktop to arranged by kind')
+            return True
+        except Exception:
+            return False
     u = ctypes.windll.user32
     lv = 0
     progman = u.FindWindowW("Progman", None)

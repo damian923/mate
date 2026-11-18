@@ -579,9 +579,12 @@ class Agent:
 
     def do_close_app(self, a):
         """Cierra una app como si tocaras la X (le deja guardar). Nunca cierra a Mate ni a Windows."""
-        import psutil, ctypes, ctypes.wintypes as W
         name = (a.get("name") or "").lower().strip()
         if not name: return "¿Qué app cierro?"
+        if sv.IS_MAC:
+            hits = sv.mac.close_app(name)
+            return f"✓ Cerré {', '.join(hits)}" if hits else f"No encontré {a.get('name')} abierto"
+        import psutil, ctypes, ctypes.wintypes as W
         pids = {p.pid for p in psutil.process_iter(["name"])
                 if name.split()[0] in (p.info["name"] or "").lower()
                 and (p.info["name"] or "").lower() not in ("explorer.exe", "python.exe", "pythonw.exe", "dwm.exe")}
@@ -634,7 +637,7 @@ class Agent:
         import mate_control as C
         hits = C.find_file(a.get("query", ""))
         if not hits: return "No encontré nada parecido 🤔"
-        os.startfile(hits[0])
+        sv.open_uri(str(hits[0]))
         return "✓ Abrí " + hits[0].name + ("\nOtros parecidos: " + ", ".join(h.name for h in hits[1:4]) if len(hits) > 1 else "")
 
     def do_meeting_note(self, a):
@@ -808,8 +811,9 @@ class Agent:
 
     def _granola_watch(self):
         """Detecta solo cuando Granola graba (aunque la arranques a mano) y, al terminar, te propone tus tareas."""
-        import comtypes, mate_control as C
-        comtypes.CoInitialize()
+        import mate_control as C
+        if not sv.IS_MAC:
+            import comtypes; comtypes.CoInitialize()
         on, off_since, mine = 0, None, False
         while True:
             time.sleep(4)          # chequeo liviano (no toca Granola): mira si tiene el micrófono activo

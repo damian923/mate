@@ -1,17 +1,21 @@
 """Interfaz moderna de Mate: ventana web (WebView2) con forma de notch arriba de la pantalla
 que se despliega en un panel. Corre todo local; el HTML está en ui/mate.html."""
-import ctypes, datetime as dt, json, subprocess, threading, time, uuid
+import ctypes, datetime as dt, json, subprocess, sys, threading, time, uuid
 from ctypes import wintypes
 from pathlib import Path
 
 import webview
+import mate_mac as mac
 
 HERE = Path(__file__).parent
-user32, gdi32, dwm = ctypes.windll.user32, ctypes.windll.gdi32, ctypes.windll.dwmapi
+IS_MAC = mac.IS_MAC
+if not IS_MAC:
+    user32, gdi32, dwm = ctypes.windll.user32, ctypes.windll.gdi32, ctypes.windll.dwmapi
 
 
 def _screen():
     """Ancho de pantalla en píxeles lógicos (sin escalado de Windows)."""
+    if IS_MAC: return mac.screen_width()
     return user32.GetSystemMetrics(0) / (user32.GetDpiForSystem() / 96)
 
 
@@ -49,7 +53,8 @@ class WebUI:
         self.window = webview.create_window(
             name, str(HERE / "ui" / "mate.html"), js_api=self.api, width=w, height=h,
             x=int((_screen() - w) / 2), y=0, frameless=True, on_top=True, resizable=False,
-            background_color="#000000", easy_drag=False, focus=True, min_size=(60, 16))
+            background_color="#000000", easy_drag=False, focus=True, min_size=(60, 16),
+            transparent=IS_MAC)   # en Mac la forma redondeada la dibuja la página (fondo transparente)
         self.speaker = speaker_cls(cfg.get("voice_id"), cfg.get("voice_speed", 1.0))
         self.agent = agent_cls(self)
         names = " ".join(w for m in self.agent.d.get("memory", []) for w in m.split() if w[:1].isupper())
@@ -71,6 +76,8 @@ class WebUI:
     def _shape(self, *_):
         """Recorta la ventana con esquinas redondeadas (abajo) para que parezca un notch/isla."""
         time.sleep(0.15)
+        if IS_MAC:   # sin ícono en el Dock; las esquinas las redondea el CSS (body.mac)
+            mac.hide_from_dock(); return
         h = self.hwnd()
         if not getattr(self, "_hidden_taskbar", False):  # que no aparezca en la barra de tareas
             ex = user32.GetWindowLongW(h, -20)
@@ -105,6 +112,10 @@ class WebUI:
     def take_focus(self):
         """Windows no deja robar el foco fácil: se 'engancha' al hilo de la ventana activa."""
         time.sleep(0.25)
+        if IS_MAC:
+            mac.take_focus()
+            if self.expanded: self.js("document.getElementById('q').focus()")
+            return
         h, fg = self.hwnd(), user32.GetForegroundWindow()
         if fg == h: return
         k32 = ctypes.windll.kernel32
@@ -124,10 +135,15 @@ class WebUI:
             time.sleep(0.08)
             try:
                 if not self.ready: continue
-                user32.GetCursorPos(ctypes.byref(pt)); user32.GetWindowRect(self.hwnd(), ctypes.byref(r))
-                cx = (r.left + r.right) / 2
-                if self.expanded: cx = r.left + 125          # con el panel abierto Mate está arriba a la izquierda
-                dx = pt.x - cx
+                if IS_MAC:
+                    px, _ = mac.cursor_pos()
+                    left = (_screen() - self.cur[0]) / 2; right = left + self.cur[0]
+                else:
+                    user32.GetCursorPos(ctypes.byref(pt)); user32.GetWindowRect(self.hwnd(), ctypes.byref(r))
+                    px, left, right = pt.x, r.left, r.right
+                cx = (left + right) / 2
+                if self.expanded: cx = left + 125          # con el panel abierto Mate está arriba a la izquierda
+                dx = px - cx
                 v = -1 if dx < -40 else 1 if dx > 40 else 0
                 if v != last:
                     last = v; self.js(f"eyeX={v}")
@@ -136,6 +152,7 @@ class WebUI:
 
     def _esc_watch(self):
         """Esc achica la isla aunque el foco esté en otro lado del panel."""
+        if IS_MAC: return   # en Mac la ventana recibe la tecla y la maneja la página
         while True:
             time.sleep(0.05)
             if self.expanded and user32.GetAsyncKeyState(0x1B) & 0x8000                     and user32.GetForegroundWindow() == self.hwnd():
@@ -291,11 +308,13 @@ class WebUI:
         self.history.append({"who": "m", "text": msg}); self.call("reply", msg, False)
         if sound:
             try:
-                import winsound; winsound.MessageBeep(winsound.MB_ICONASTERISK)
+                if IS_MAC: mac.beep()
+                else: import winsound; winsound.MessageBeep(winsound.MB_ICONASTERISK)
             except Exception: pass
         self.speaker.say(msg)
 
     def copy(self, text):
+        if IS_MAC: return mac.clipboard_set_text(text)
         subprocess.run(["powershell", "-NoProfile", "-Command", "Set-Clipboard -Value $input"],
                        input=text, text=True, creationflags=0x08000000)
 
@@ -405,8 +424,16 @@ class WebUI:
 
     # ---------------- música ----------------
     def _media_watch(self):
-        from mate_media import Media
-        self.media = Media()
+        if IS_MAC:
+            class _MacMedia:   # Spotify / Música por AppleScript
+                def now(self): return mac.now_playing()
+                def cmd(self, what):
+                    mac.media({"playpause": "playpause", "play": "playpause", "pause": "playpause",
+                               "next": "next", "prev": "prev"}.get(what, "playpause"))
+            self.media = _MacMedia()
+        else:
+            from mate_media import Media
+            self.media = Media()
         last = None
         while True:
             now = self.media.now()
@@ -527,6 +554,7 @@ class Api:
     def __init__(self, ui): self._ui, self._on_ready = ui, None
 
     def ready(self):
+        if IS_MAC: threading.Thread(target=lambda: self._ui.js("document.body.classList.add('mac')"), daemon=True).start()
         if self._on_ready: self._on_ready(); self._on_ready = None
 
     def expand(self): self._ui.expand()

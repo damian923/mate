@@ -37,6 +37,10 @@ canvas.px{image-rendering:pixelated;display:block}
 /* ============================ ISLA ============================ */
 #notch{position:fixed;inset:0;background:var(--island);color:#efe6d8;cursor:pointer;overflow:hidden}
 body.open #notch{display:none}
+/* Mac: la ventana es transparente y la forma redondeada la dibuja la página */
+html:has(body.mac), body.mac{background:transparent}
+body.mac #notch{border-radius:0 0 14px 14px}
+body.mac #panel, body.mac #drop{border-radius:0 0 18px 18px;overflow:hidden}
 #notch .lay{position:absolute;inset:0;display:flex;align-items:center;gap:8px;padding:0 12px;opacity:0;transform:translateY(-6px);
   transition:opacity .25s var(--ease),transform .5s var(--spring);pointer-events:none}
 #notch .lay.on{opacity:1;transform:none;transition-delay:.12s;pointer-events:auto}
