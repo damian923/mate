@@ -110,6 +110,7 @@ class Listener:
         self.capture = None        # grabación del pedido después de activarse
         self.started = 0
         self.on_heard = None       # callback para mostrar lo que entendió (opcional)
+        self.on_wake_hint = None   # callback apenas se oye "Mate" (feedback inmediato)
 
     # ---------------- arranque ----------------
     def start(self):
@@ -148,8 +149,16 @@ class Listener:
         if self.rec.AcceptWaveform(data):
             text = json.loads(self.rec.Result()).get("text", "")
             audio = np.concatenate(self.utter) if self.utter else None
-            self.utter = []
+            self.utter = []; self._hinted = False
             if text: log("vosk:", text); self._candidate(text, audio)
+        elif not getattr(self, "_hinted", False):
+            # Apenas se oye "Mate" (antes de que termines la frase) la isla ya reacciona: se siente instantáneo
+            part = json.loads(self.rec.PartialResult()).get("partial", "")
+            if part and self._has_wake(part):
+                self._hinted = True
+                if self.on_wake_hint:
+                    try: self.on_wake_hint()
+                    except Exception: pass
 
     def _load_whisper(self):
         try:

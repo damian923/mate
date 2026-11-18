@@ -313,6 +313,64 @@ def slack_prepare(recipient, text, file=None):
     return True, "listo para enviar"
 
 
+def _whatsapp_window():
+    from pywinauto import Desktop
+    for w in Desktop(backend="uia").windows():
+        try:
+            if w.window_text().strip() == "WhatsApp" and w.is_visible(): return w
+        except Exception: pass
+    return None
+
+
+def _paste_file(file):
+    """Copia el archivo al portapapeles, lo pega y te devuelve tu portapapeles como estaba."""
+    from pywinauto.keyboard import send_keys
+    ps = lambda cmd: subprocess.run(["powershell", "-NoProfile", "-Command", cmd], capture_output=True,
+                                    text=True, creationflags=0x08000000)
+    saved = ps("Get-Clipboard -Raw").stdout
+    ps(f"Set-Clipboard -LiteralPath '{str(file).replace(chr(39), chr(39) * 2)}'")
+    time.sleep(0.4); send_keys("^v"); time.sleep(3)
+    if saved.strip():
+        subprocess.run(["powershell", "-NoProfile", "-Command", "Set-Clipboard -Value ([Console]::In.ReadToEnd())"],
+                       input=saved.rstrip("\r\n"), text=True, creationflags=0x08000000)
+
+
+def _keys_text(text):
+    return (text.replace(" ", "{SPACE}").replace("\n", "+{ENTER}").replace("(", "{(}").replace(")", "{)}")
+            .replace("+", "{+}").replace("%", "{%}").replace("^", "{^}").replace("{{+}}", "{+}"))
+
+
+def whatsapp_prepare(recipient, text, file=None):
+    """Abre WhatsApp de escritorio, busca el chat, adjunta el archivo y escribe el texto SIN enviarlo."""
+    from pywinauto.keyboard import send_keys
+    w = _whatsapp_window()
+    if not w:
+        os.startfile("whatsapp:"); w = wait_for(_whatsapp_window, timeout=25)
+    if not w: return False, "✗ No pude abrir WhatsApp de escritorio"
+    w.set_focus(); time.sleep(0.8)
+    send_keys("^f"); time.sleep(0.6)                          # buscar chat
+    send_keys("^a{BACKSPACE}"); send_keys(_keys_text(recipient), pause=0.03); time.sleep(2)
+    send_keys("{DOWN}"); time.sleep(0.3); send_keys("{ENTER}"); time.sleep(1.5)   # abre el primer resultado
+    if file: _paste_file(file)                               # aparece la vista previa del adjunto
+    if text: send_keys(_keys_text(text), pause=0.01)        # queda como texto del adjunto
+    return True, "listo para enviar"
+
+
+def whatsapp_send_now():
+    from pywinauto.keyboard import send_keys
+    w = _whatsapp_window()
+    if not w: return "✗ WhatsApp no está abierto"
+    w.set_focus(); time.sleep(0.3); send_keys("{ENTER}")
+    return "✓ Enviado por WhatsApp"
+
+
+def whatsapp_discard():
+    from pywinauto.keyboard import send_keys
+    w = _whatsapp_window()
+    if not w: return
+    w.set_focus(); time.sleep(0.3); send_keys("{ESC}"); time.sleep(0.3); send_keys("^a{BACKSPACE}")
+
+
 def slack_send_now():
     from pywinauto.keyboard import send_keys
     w = _slack_window()

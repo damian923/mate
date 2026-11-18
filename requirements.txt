@@ -17,3 +17,5 @@ winrt-runtime
 winrt-Windows.Media.Control
 winrt-Windows.Foundation
 pycaw
+pdf2docx
+docx2pdf

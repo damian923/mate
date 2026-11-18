@@ -281,6 +281,13 @@ body.dropping #drop{display:flex}
 #drop .file b{font-size:13px}
 #drop .file small{color:#a09380;font-size:11.5px}
 #drop .zone{border:1.5px dashed rgba(196,138,87,.5);border-radius:16px;padding:16px 34px;color:#c48a57;font-weight:600;font-size:13px}
+#drop .zone{border:0;padding:0;width:100%;color:#efe6d8;font-weight:400}
+#drop .dz-h{font-size:12.5px;color:#c48a57;margin-bottom:10px;font-weight:600}
+#drop .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(78px,1fr));gap:8px;width:100%}
+#drop .tile{border:1.5px dashed rgba(196,138,87,.45);border-radius:12px;padding:12px 6px;font-size:12px;display:flex;flex-direction:column;gap:4px;align-items:center;transition:all .15s var(--ease)}
+#drop .tile b{font-size:18px;color:#c48a57;pointer-events:none}
+#drop .tile.hot{border-style:solid;border-color:#c48a57;background:rgba(196,138,87,.18);transform:scale(1.05)}
+#drop .tile.dan.hot{border-color:#d66a52;background:rgba(214,106,82,.18)}
 #drop .res{max-width:94%;max-height:120px;overflow:auto;background:#17120e;border-radius:10px;padding:8px 12px;font-size:12.5px;text-align:left;white-space:pre-wrap;user-select:text}
 #drop .chip2{background:#2d241c;color:#efe6d8}
 
@@ -668,7 +675,7 @@ setInterval(()=>{
 },1000);
 const mmss = s => { s=Math.max(0,s|0); return String(Math.floor(s/60)).padStart(2,"0")+":"+String(s%60).padStart(2,"0"); };
 $("notch").addEventListener("click",(e)=>{ if(!cardOn) api("expand"); });
-let hoverT; $("notch").addEventListener("mouseenter",()=>{ if(!cardOn) hoverT=setTimeout(()=>api("expand"),500); });
+let hoverT; $("notch").addEventListener("mouseenter",()=>{ if(!cardOn) hoverT=setTimeout(()=>api("expand"),220); });
 $("notch").addEventListener("mouseleave",()=>clearTimeout(hoverT));
 
 /* ---------- tarjeta de confirmación tipo "recibo" en la isla (Enter / Esc) ---------- */
@@ -848,7 +855,7 @@ function renderWeek(today){
     const list = s==="hecha" ? col.slice(-6) : col;
     return `<div class="kcol ${STC[s]}" data-s="${s}" ondragover="event.preventDefault();this.classList.add('over')" ondragleave="this.classList.remove('over')" ondrop="dropTask(event,'${s}')">
       <h5>${STL[s]}<span>${col.length}</span></h5>${list.map(t=>{ const late=t.status!=="hecha"&&t.date&&t.date<today;
-        return `<div class="kc ${late?"late":""}" draggable="true" ondragstart="event.dataTransfer.setData('id','${t.id}')" ondblclick="cycle('${t.id}')"><span>${esc(t.text)}</span><div class="kb"><button title="Un día antes" onclick="event.stopPropagation();api('task_shift','${t.id}',-1)">‹</button><button title="Para hoy" onclick="event.stopPropagation();api('task_shift','${t.id}',0)">hoy</button><button title="Un día después" onclick="event.stopPropagation();api('task_shift','${t.id}',1)">›</button><button title="Siguiente estado" onclick="event.stopPropagation();cycle('${t.id}')">✓</button></div><small>${late?"atrasada · ":""}${niceDate(t.date)}${t.from?" · "+esc(t.from.slice(0,18)):""}</small></div>`; }).join("")}
+        return `<div class="kc ${late?"late":""}" draggable="true" ondragstart="window.innerDrag=1;event.dataTransfer.setData('id','${t.id}')" ondragend="window.innerDrag=0" ondblclick="cycle('${t.id}')"><span>${esc(t.text)}</span><div class="kb"><button title="Un día antes" onclick="event.stopPropagation();api('task_shift','${t.id}',-1)">‹</button><button title="Para hoy" onclick="event.stopPropagation();api('task_shift','${t.id}',0)">hoy</button><button title="Un día después" onclick="event.stopPropagation();api('task_shift','${t.id}',1)">›</button><button title="Siguiente estado" onclick="event.stopPropagation();cycle('${t.id}')">✓</button></div><small>${late?"atrasada · ":""}${niceDate(t.date)}${t.from?" · "+esc(t.from.slice(0,18)):""}</small></div>`; }).join("")}
       ${s==="hecha"&&col.length>6?`<div class="kc" style="opacity:.45">+${col.length-6} más</div>`:""}</div>`; }).join("");
 }
 function pickDay(ds){ dayFilter = dayFilter===ds ? null : ds; renderWeek(TODAY()); }
@@ -1029,6 +1036,7 @@ function openModal(m){
 }
 function answer(v){
   $("modal").classList.remove("on");
+  if(modalId==="_wa"){ if(v){ $("dropRes").style.display="block"; $("dropRes").textContent="Preparando el mensaje en WhatsApp…"; api("file_action","whatsapp",dropFiles.map(f=>f.path),v);} return; }
   if(modalId==="_slack"){ if(v){ $("dropRes").style.display="block"; $("dropRes").textContent="Preparando el mensaje en Slack…"; api("file_action","slack",dropFiles.map(f=>f.path),v);} return; }
   if(modalId==="_hab"){ if(v){ const p=v.trim().split(/\s+/); const g=+p[p.length-1]; const n=isNaN(g)?v:p.slice(0,-1).join(" "); api("habit_add",n,isNaN(g)?1:g);} return; }
   if(modalId==="_disc"){ if(v) api("google_disconnect", modalData.alias); return; }
@@ -1054,9 +1062,58 @@ big.addEventListener("click", ()=>{
 /* ---------- soltar archivos sobre la isla ---------- */
 const KIND_IC = {imagen:"🖼️",pdf:"📕",word:"📘",excel:"📗",powerpoint:"📙",texto:"📄",audio:"🎵",video:"🎬",otro:"📦"};
 let dropFiles=[];
-window.Mate.dropStart = ()=>{ document.body.classList.add("dropping"); $("dropZone").style.display=""; $("dropBody").style.display="none"; setMate("wow"); };
+// Archivo entrando: se detecta en la página al instante (sin ida y vuelta a Python)
+// Qué es el archivo según su tipo MIME (el navegador lo dice apenas entra, antes de soltarlo)
+function mimeInfo(m){
+  m=(m||"").toLowerCase();
+  if (m==="application/pdf") return {k:"PDF", ic:"📕", conv:["WORD"]};
+  if (m.includes("wordprocessingml")) return {k:"Word", ic:"📘", conv:["PDF"]};
+  if (m==="image/jpeg") return {k:"Imagen JPG", ic:"🖼️", conv:["PNG","PDF"]};
+  if (m==="image/png") return {k:"Imagen PNG", ic:"🖼️", conv:["JPG","PDF"]};
+  if (m.startsWith("image/")) return {k:"Imagen", ic:"🖼️", conv:["JPG","PNG"]};
+  if (m.includes("spreadsheet")) return {k:"Excel", ic:"📗", conv:[]};
+  if (m.includes("presentation")) return {k:"PowerPoint", ic:"📙", conv:[]};
+  if (m.startsWith("video/")) return {k:"Video", ic:"🎬", conv:[]};
+  if (m.startsWith("audio/")) return {k:"Audio", ic:"🎵", conv:[]};
+  if (m.startsWith("text/")) return {k:"Texto", ic:"📄", conv:[]};
+  return {k:"Archivo", ic:"📦", conv:[]};
+}
+const CONV_LBL = {WORD:"Word", PDF:"PDF", PNG:"PNG", JPG:"JPG"};
+let dropAct = null;
+document.addEventListener("dragenter", e=>{
+  if (window.innerDrag || !e.dataTransfer || ![...e.dataTransfer.types].includes("Files")) return;
+  e.preventDefault();
+  if (!document.body.classList.contains("dropping")) {
+    const it=[...e.dataTransfer.items].filter(i=>i.kind==="file");
+    window.Mate.dropStart(it[0]&&it[0].type, it.length); api("drop_enter");
+  }
+});
+document.addEventListener("dragover", e=>{
+  if (window.innerDrag) return;
+  e.preventDefault();
+  const t = e.target.closest && e.target.closest("[data-act]");
+  document.querySelectorAll("#dropZone .tile").forEach(x=>x.classList.toggle("hot", x===t));
+  dropAct = t ? {a:t.dataset.act, x:t.dataset.x||""} : null;
+});
+document.addEventListener("dragleave", e=>{   // salió de la isla sin soltar: vuelve a su lugar
+  if (window.innerDrag || e.relatedTarget || dropFiles.length) return;
+  if (document.body.classList.contains("dropping")) dropClose();
+});
+window.Mate.dropStart = (mime, n)=>{
+  document.body.classList.add("dropping"); dropAct=null;
+  const i = mimeInfo(mime);
+  const tiles = i.conv.map(c=>`<div class="tile" data-act="convert" data-x="${c}"><b>⇄</b>Pasar a ${CONV_LBL[c]}</div>`).join("") +
+    `<div class="tile" data-act="slack"><b>#</b>Slack</div><div class="tile" data-act="whatsapp"><b>✆</b>WhatsApp</div>
+     <div class="tile" data-act="analyze"><b>✦</b>Analizar</div><div class="tile dan" data-act="trash"><b>🗑</b>Papelera</div>`;
+  $("dropZone").innerHTML = `<div class="dz-h">${i.ic} ${i.k}${n>1?` (${n} archivos)`:""} · soltalo sobre lo que quieras hacer</div><div class="tiles">${tiles}</div>`;
+  $("dropZone").style.display=""; $("dropBody").style.display="none"; setMate("wow");
+};
 window.Mate.dropEnd = ()=>{ if(!dropFiles.length){ document.body.classList.remove("dropping"); } };
-window.Mate.dropFiles = (files)=>{ dropFiles=files; showDropActions(); setMate("happy",1.5); };
+window.Mate.dropFiles = (files)=>{
+  dropFiles=files; showDropActions(); setMate("happy",1.5);
+  const a=dropAct; dropAct=null;
+  if (a) fileAct(a.a, a.x);   // lo soltaste sobre una acción: la hago directo
+};
 window.Mate.dropResult = (text, done)=>{ const r=$("dropRes"); if(r){ r.style.display="block"; r.textContent=text; } if(done) setMate("happy",2); };
 function showDropActions(conv){
   const f=dropFiles[0]; if(!f) return;
@@ -1064,19 +1121,20 @@ function showDropActions(conv){
   const many = dropFiles.length>1 ? ` y ${dropFiles.length-1} más` : "";
   const mb=(n)=> n>1048576 ? (n/1048576).toFixed(1)+" MB" : Math.max(1,Math.round(n/1024))+" KB";
   let acts = conv
-    ? `<div class="t2" style="color:#a09380;font-size:12px">¿A qué formato?</div><div class="chips" style="justify-content:center">${f.formats.map(x=>`<span class="ib" onclick="fileAct('convert','${x}')">${x}</span>`).join("")}</div>
-       <span class="ib" onclick="showDropActions()">‹ Volver</span>`
+    ? ""
     : `<div class="chips" style="justify-content:center">
-        <span class="ib pri" onclick="fileAct('analyze')">Analizar</span>
-        <span class="ib" onclick="fileAct('organize')">Ordenar</span>
-        ${f.formats.length?`<span class="ib" onclick="showDropActions(true)">Convertir</span>`:""}
+        ${f.formats.map(x=>`<span class="ib pri" onclick="fileAct('convert','${x}')">Pasar a ${CONV_LBL[x]||x}</span>`).join("")}
+        <span class="ib ${f.formats.length?"":"pri"}" onclick="fileAct('analyze')">Analizar</span>
         <span class="ib" onclick="fileAct('slack')">Slack…</span>
+        <span class="ib" onclick="fileAct('whatsapp')">WhatsApp…</span>
+        <span class="ib" onclick="fileAct('organize')">Ordenar</span>
         <span class="ib dan" onclick="fileAct('trash')">Papelera</span>
         <span class="ib" style="background:none;color:#a09380" onclick="dropClose()">Cancelar</span></div>`;
   b.innerHTML = `<div class="file"><span style="font-size:20px">${KIND_IC[f.kind]||"📦"}</span><div style="text-align:left"><b>${esc(f.name)}${many}</b><br><small>${f.kind} · ${mb(f.size)} · ¿qué hago con esto?</small></div></div>${acts}<div class="res" id="dropRes" style="display:none"></div>`;
 }
 function fileAct(a, extra){
   if (a==="slack"){ openModal({id:"_slack",kind:"ask",title:"Mandar por Slack",text:"¿A quién se lo mando? Si querés, el mensaje después de dos puntos: “Lara: te paso el archivo”",placeholder:"Lara: acá va"}); return; }
+  if (a==="whatsapp"){ openModal({id:"_wa",kind:"ask",title:"Mandar por WhatsApp",text:"¿A quién se lo mando? (como lo tenés agendado) Si querés, el mensaje después de dos puntos: “Mamá: te paso el archivo”",placeholder:"Juan: acá va"}); return; }
   if (a==="trash"){ openModal({id:"_trash",kind:"confirm",title:"¿Lo mando a la papelera?",text:"Archivo: "+dropFiles.map(f=>f.name).join(", ")+"\nSe puede recuperar desde la papelera de reciclaje.",ok:"A la papelera"}); return; }
   doFileAct(a, extra);
 }

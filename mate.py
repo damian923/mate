@@ -2,8 +2,10 @@
 Mate - asistente de escritorio 100% local (Windows).
 IA: Ollama (llama3.2:3b por defecto). Voz: Vosk + pyttsx3 (offline). Doble aplauso para activar.
 """
-import difflib, json, os, shutil, threading, time, uuid, datetime as dt
+import difflib, json, os, shutil, sys, threading, time, uuid, datetime as dt
 from pathlib import Path
+if sys.stdout is None: sys.stdout = open(os.devnull, "w")   # con pythonw no hay consola: que las librerías
+if sys.stderr is None: sys.stderr = open(os.devnull, "w")   # que imprimen progreso no se caigan
 import urllib.request
 
 import mate_servicios as sv
@@ -810,30 +812,37 @@ class Agent:
         comtypes.CoInitialize()
         on, off_since, mine = 0, None, False
         while True:
-            time.sleep(15)
+            time.sleep(4)          # chequeo liviano (no toca Granola): mira si tiene el micrófono activo
             try: rec = C.granola_capturing()
             except Exception as e:
-                log(f"granola watch: {e}"); continue
+                log(f"granola watch: {e}"); time.sleep(10); continue
             if rec:
                 on += 1; off_since = None
                 if on >= 2 and self.ui.recording: mine = True   # la arrancó Mate: igual sigo su final
-                elif on == 2:                                     # 30 s seguidos grabando: es una reunión
+                elif on == 2:                                     # ~8 s seguidos grabando: es una reunión
                     mine = True
-                    self.ui.recording = {"title": "Granola está grabando", "since": time.time() - 30}
-                    self.ui.notch("Veo que Granola está grabando. Al terminar te busco tus tareas", "", 6)
+                    self.ui.recording = {"title": "Granola está grabando", "since": time.time() - 8}
+                    self.ui.notch("Veo que Granola está grabando. Al terminar te busco tus tareas", "", 5)
                     log("granola: empezó a grabar")
             else:
                 on = 0
                 if self.ui.recording and mine:
                     off_since = off_since or time.time()
-                    if time.time() - off_since > 60:      # 1 min sin micrófono: terminó (no una pausa)
+                    if time.time() - off_since > 16:      # ~16 s sin micrófono: terminó (no un corte de un segundo)
                         mine = False; off_since = None; self.ui.recording = None
                         log("granola: terminó la grabación")
-                        self.ui.notch("Terminó la reunión. Espero las notas de Granola y te busco tus tareas", "", 8)
-                        def after():
-                            time.sleep(45)                # Granola arma las notas solo al cortar
-                            return self.do_meeting_tasks({})
-                        self.ui.background(after)
+                        self.ui.notch("Terminó la reunión: te busco tus tareas en Granola", "think", 10)
+                        self.ui.background(self._tasks_when_ready)
+
+    def _tasks_when_ready(self):
+        """Granola tarda un poco en armar las notas: pruebo enseguida y reintento hasta que estén."""
+        res = "✗ No pude leer la nota de Granola"
+        for espera in (12, 15, 20, 30):
+            time.sleep(espera)
+            res = self.do_meeting_tasks({})
+            if not res.startswith("✗ No pude leer"): break
+            log("granola: notas todavía no listas, reintento")
+        return res
 
     def tick(self):
         now = time.time()
@@ -863,7 +872,7 @@ class Agent:
                     self.ui.alert(ar.di("descanso"))
             else:
                 return f"{'☕' if self.focus_break else '🎯'} {int(left // 60):02d}:{int(left % 60):02d}"
-        if CFG.get("mail_alerts", True) and now - self.last_mail_check > 300 and self.gmail.accounts():
+        if CFG.get("mail_alerts", True) and now - self.last_mail_check > 90 and self.gmail.accounts():
             self.last_mail_check = now
             threading.Thread(target=self._mail_watch, daemon=True).start()
         return None

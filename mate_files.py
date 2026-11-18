@@ -24,14 +24,26 @@ def kind(p):
     return "otro"
 
 
+def formats(p):
+    """A qué se puede convertir: lo más común primero (PDF→Word, Word→PDF, JPG→PNG, PNG→JPG)."""
+    e = Path(p).suffix.lower()
+    if e == ".pdf": return ["WORD"]
+    if e == ".docx": return ["PDF"]
+    if e in (".jpg", ".jpeg"): return ["PNG", "PDF"]
+    if e == ".png": return ["JPG", "PDF"]
+    if e in IMG: return ["JPG", "PNG"]
+    return []
+
+
 def info(paths):
-    out = []
-    for p in paths:
-        p = Path(p)
-        out.append({"path": str(p), "name": p.name, "kind": kind(p), "size": p.stat().st_size if p.exists() else 0,
-                    "formats": [f for f in FORMATOS_IMG if "." + f.lower() not in (p.suffix.lower(), ".jpeg" if f == "JPG" else "")]
-                    if kind(p) == "imagen" else []})
-    return out
+    return [{"path": str(Path(p)), "name": Path(p).name, "kind": kind(p),
+             "size": Path(p).stat().st_size if Path(p).exists() else 0, "formats": formats(p)} for p in paths]
+
+
+def _free(p, ext):
+    dst = p.with_suffix(ext); n = 2
+    while dst.exists(): dst = p.with_name(f"{p.stem} ({n}){ext}"); n += 1
+    return dst
 
 
 def _xml_text(zpath, inner_glob):
@@ -68,12 +80,24 @@ def describe_image(p):
 
 
 def convert(p, fmt):
-    """Convierte una imagen a otro formato. Guarda la copia al lado del original (no lo borra)."""
-    from PIL import Image
+    """Convierte a otro formato. Guarda la copia al lado del original (no lo borra)."""
     p = Path(p); fmt = fmt.upper()
+    if p.suffix.lower() == ".pdf" and fmt == "WORD":
+        from pdf2docx import Converter
+        dst = _free(p, ".docx"); cv = Converter(str(p)); cv.convert(str(dst)); cv.close()
+        return dst
+    if p.suffix.lower() == ".docx" and fmt == "PDF":
+        dst = _free(p, ".pdf")
+        try:
+            import pythoncom; pythoncom.CoInitialize()
+            from docx2pdf import convert as d2p
+            d2p(str(p), str(dst))
+        except Exception as e:
+            raise RuntimeError("para pasar de Word a PDF hace falta tener Microsoft Word instalado") from e
+        return dst
+    from PIL import Image
     ext = {"JPG": ".jpg", "PNG": ".png", "WEBP": ".webp", "BMP": ".bmp", "TIFF": ".tiff", "PDF": ".pdf"}[fmt]
-    dst = p.with_suffix(ext); n = 2
-    while dst.exists(): dst = p.with_name(f"{p.stem} ({n}){ext}"); n += 1
+    dst = _free(p, ext)
     im = Image.open(p)
     if fmt in ("JPG", "PDF", "BMP") and im.mode in ("RGBA", "P", "LA"):
         bg = Image.new("RGB", im.size, "white"); bg.paste(im.convert("RGBA"), mask=im.convert("RGBA").split()[-1]); im = bg

@@ -58,6 +58,7 @@ class WebUI:
                                      whisper_model=cfg.get("whisper", "small"), vocab=names,
                                      claps=cfg.get("claps", True))
         self.listener.on_heard = lambda t: self.notch("No te entendí, probá de nuevo", "", 3)
+        self.listener.on_wake_hint = lambda: (self.call("mate", "listening", 4), self.notch("Te escucho…", "listen", 4))
         self.voice_err = self.listener.start() if cfg.get("voice", True) else "voz apagada"
         self.window.events.shown += self._shape
         self.window.events.closed += lambda: None
@@ -108,11 +109,30 @@ class WebUI:
         if fg == h: return
         k32 = ctypes.windll.kernel32
         a, b = user32.GetWindowThreadProcessId(fg, None), k32.GetCurrentThreadId()
+        if user32.GetAsyncKeyState(0x01) & 0x8000: return   # arrastrando algo con el mouse: no tocar el foco
         user32.AttachThreadInput(b, a, True)
         user32.keybd_event(0x12, 0, 0, 0); user32.keybd_event(0x12, 0, 2, 0)  # Alt: habilita el cambio de foco
         user32.BringWindowToTop(h); user32.SetForegroundWindow(h); user32.SetFocus(h)
         user32.AttachThreadInput(b, a, False)
         if self.expanded: self.js("document.getElementById('q').focus()")
+
+    def _cursor_watch(self):
+        """Los ojos de Mate siguen el mouse por toda la pantalla (no sólo arriba de la isla).
+        Sólo le avisa a la página cuando cambia hacia dónde mirar, así no gasta nada."""
+        last, pt, r = None, wintypes.POINT(), wintypes.RECT()
+        while True:
+            time.sleep(0.08)
+            try:
+                if not self.ready: continue
+                user32.GetCursorPos(ctypes.byref(pt)); user32.GetWindowRect(self.hwnd(), ctypes.byref(r))
+                cx = (r.left + r.right) / 2
+                if self.expanded: cx = r.left + 125          # con el panel abierto Mate está arriba a la izquierda
+                dx = pt.x - cx
+                v = -1 if dx < -40 else 1 if dx > 40 else 0
+                if v != last:
+                    last = v; self.js(f"eyeX={v}")
+            except Exception:
+                pass
 
     def _esc_watch(self):
         """Esc achica la isla aunque el foco esté en otro lado del panel."""
@@ -401,13 +421,6 @@ class WebUI:
         from webview.dom import DOMEventHandler
         doc = self.window.dom.document
 
-        def enter(e):
-            if self.expanded and not self.dropping: return   # arrastre dentro del panel (tablero), no un archivo
-            if not self.dropping:
-                self.dropping = True
-                self.expanded = True
-                self.resize(self.size_drop)
-                self.call("dropStart")
 
         def drop(e):
             files = [f.get("pywebviewFullPath") for f in (e.get("dataTransfer", {}) or {}).get("files", [])]
@@ -417,9 +430,16 @@ class WebUI:
             self.drop_paths = files
             self.call("dropFiles", info(files))
 
-        doc.events.dragenter += DOMEventHandler(enter, True, True)
-        doc.events.dragover += DOMEventHandler(lambda e: None, True, True)
+        # La entrada del archivo la detecta la página al instante (ver dragenter en mate.html -> drop_enter);
+        # acá sólo se necesita el drop, que es lo único que trae la ruta completa del archivo.
         doc.events.drop += DOMEventHandler(drop, True, True)
+
+    def drop_enter(self):
+        if self.dropping: return
+        self.dropping = True
+        self.expanded = True
+        self.resize(self.size_drop)
+        self.call("dropStart")
 
     def drop_close(self):
         self.dropping = False
@@ -433,7 +453,8 @@ class WebUI:
 
     def file_action(self, action, paths, extra=""):
         import mate_files as F, mate_control as C
-        from mate import ask_long
+        import sys   # mate.py corre como __main__: importarlo de nuevo arrancaría otro Mate y lo trababa
+        ask_long = sys.modules["__main__"].ask_long
         res, done = "", True
         try:
             if action == "analyze":
@@ -453,8 +474,17 @@ class WebUI:
             elif action == "organize":
                 res = "✓ Ordenado:\n" + "\n".join(f"{Path(p).name} → {F.organize(p).parent}" for p in paths)
             elif action == "convert":
-                res = "✓ Listo:\n" + "\n".join(f"{F.convert(p, extra).name}" for p in paths if F.kind(p) == "imagen")
-                res += "\n(el original queda igual)"
+                self.call("dropResult", f"Convirtiendo a {extra}…", False)
+                res = "✓ Listo, lo guardé al lado del original:\n" + "\n".join(
+                    f"{F.convert(p, extra).name}" for p in paths if extra in F.formats(p))
+            elif action == "whatsapp":
+                to, _, msg = (extra or "").partition(":")
+                ok, m = C.whatsapp_prepare(to.strip(), msg.strip(), paths[0])
+                if not ok: res = m
+                elif self.confirm(f"¿Lo envío por WhatsApp?\n\nPara: {to.strip()}\nMensaje: {msg.strip() or '(sin texto)'}\nArchivo: {Path(paths[0]).name}"):
+                    res = C.whatsapp_send_now()
+                else:
+                    C.whatsapp_discard(); res = "Ok, no lo mandé"
             elif action == "trash":
                 for p in paths: F.trash(p)
                 res = f"✓ Mandé {len(paths)} archivo(s) a la papelera. Si te arrepentís, están ahí."
@@ -479,6 +509,7 @@ class WebUI:
             self.notch(msg, "", 6)
             threading.Thread(target=self.loop, daemon=True).start()
             threading.Thread(target=self._esc_watch, daemon=True).start()
+            threading.Thread(target=self._cursor_watch, daemon=True).start()
             threading.Thread(target=self._media_watch, daemon=True).start()
             self._hook_drop()
         self.api._on_ready = on_ready
@@ -676,5 +707,6 @@ class Api:
         threading.Thread(target=self._ui.file_action, args=(action, paths, extra), daemon=True).start()
 
     def drop_close(self): self._ui.drop_close()
+    def drop_enter(self): self._ui.drop_enter()
 
     def quit(self): self._ui.window.destroy()
