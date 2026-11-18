@@ -323,14 +323,44 @@ class Agent:
                 return random.choice(resp)
         return None
 
-    def handle(self, text):
+    def gemini_key(self):
+        return (sv.config().get("gemini_key") or "").strip()
+
+    def handle_audio(self, audio):
+        """Voz con Gemini: el audio va directo y vuelve lo que dijiste + qué hacer (sin Whisper ni IA local)."""
+        import mate_gemini as G
+        self._step("Entendiendo lo que dijiste")
+        try:
+            r = G.understand_audio(self.gemini_key(), audio, self.system_prompt(), self.history,
+                                   sv.config().get("gemini_model"))
+        except Exception as e:
+            log(f"gemini audio: {e}")
+            return None, None                      # la interfaz cae a Whisper local
+        heard = (r.get("heard") or "").strip()
+        log(f"gemini oyó: {heard!r} -> {r.get('action')} ({r.get('_secs')}s)")
+        if not heard or r.get("action") == "none": return "", None
+        quick = self.charla(heard) or None
+        if quick: return heard, quick
+        fast = self.fast_route(heard)              # los atajos instantáneos siguen ganando
+        return heard, self.handle(heard, routed=fast or r)
+
+    def handle(self, text, routed=None):
         self.last_text = text
-        quick = self.charla(text)
+        quick = None if routed else self.charla(text)
         if quick:
             self.history += [{"role": "user", "content": text}, {"role": "assistant", "content": quick}]
             return quick
-        r = self.fast_route(text)
+        r = routed or self.fast_route(text)
         raw = json.dumps(r, ensure_ascii=False) if r else None
+        if not r and self.gemini_key():            # pedido escrito: Gemini entiende en ~1 s
+            import mate_gemini as G
+            self._step("Entendiendo el pedido")
+            try:
+                r = G.understand_text(self.gemini_key(), text, self.system_prompt(), self.history,
+                                      sv.config().get("gemini_model"))
+                raw = json.dumps(r, ensure_ascii=False)
+            except Exception as e:
+                log(f"gemini texto: {e}"); r = None
         if not r:
             msgs = [{"role": "system", "content": self.system_prompt()}] + self.history[-6:] + \
                    [{"role": "user", "content": text}]

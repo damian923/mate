@@ -111,6 +111,8 @@ class Listener:
         self.started = 0
         self.on_heard = None       # callback para mostrar lo que entendió (opcional)
         self.on_wake_hint = None   # callback apenas se oye "Mate" (feedback inmediato)
+        self.in_meeting = lambda: False   # la interfaz lo reemplaza: en reunión no se activa con aplausos
+        self.on_audio = None   # con Gemini: recibe (audio, por_palabra) y devuelve None si hay que usar Whisper
 
     # ---------------- arranque ----------------
     def start(self):
@@ -149,7 +151,7 @@ class Listener:
             self._capture_step(s); return
         self.utter.append(s)
         if len(self.utter) > 120: self.utter = self.utter[-120:]   # máx 12 s
-        if self.claps_on: self._clap(s)
+        if self.claps_on and not self.in_meeting(): self._clap(s)   # en reunión, risas y golpes no lo activan
         if self.rec.AcceptWaveform(data):
             text = json.loads(self.rec.Result()).get("text", "")
             audio = np.concatenate(self.utter) if self.utter else None
@@ -202,12 +204,21 @@ class Listener:
         threading.Thread(target=self._confirm, args=(vosk_text, audio), daemon=True).start()
 
     def _confirm(self, vosk_text, audio):
+        # Con Gemini: si dijo "Mate" + algo más, el audio entero va a Gemini (entiende y decide si era para Mate)
+        after = self._after_wake(vosk_text)
+        if self.on_audio and audio is not None and len(after.split()) >= 2:
+            res = self.on_audio(audio, True)
+            if res is not None: return                # Gemini lo resolvió (o decidió que no era para Mate)
         text = self.transcribe(audio)
         log("whisper (confirmar):", repr(text))
         if text is None:                          # Whisper todavía cargando: uso Vosk
             text = vosk_text
         if not text or not self._has_wake(text):  # falsa alarma: no dijo "Mate"
             return
+        # "Mate" tiene que estar al principio ("Mate, poné…" / "Che Mate…"): si aparece en el medio
+        # de una charla ("se mate", "yo mate el…") no es para él
+        if not re.search(r"^\W*(?:\w+\W+){0,2}?" + self._wake_rx(), text.lower()):
+            log("ignorado: 'mate' en el medio de la frase"); return
         cmd = self._after_wake(text)
         if len(cmd.split()) >= 2: self._deliver(cmd)
         else: self.activate()
@@ -263,6 +274,9 @@ class Listener:
             log("sin voz", "(fin de la charla)" if follow else "")
             if self.on_heard and not follow: self.on_heard(None)
             return
+        if self.on_audio:                                 # Gemini entiende el audio directo
+            res = self.on_audio(audio, False)
+            if res is not None: return
         t0 = time.time()
         text = self.transcribe(audio)
         log("whisper (pedido):", repr(text), "dur", round(len(audio) / self.RATE, 1), f"tardó {time.time() - t0:.1f}s")

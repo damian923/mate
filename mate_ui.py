@@ -58,10 +58,14 @@ class WebUI:
         self.speaker = speaker_cls(cfg.get("voice_id"), cfg.get("voice_speed", 1.0))
         self.agent = agent_cls(self)
         names = " ".join(w for m in self.agent.d.get("memory", []) for w in m.split() if w[:1].isupper())
-        self.listener = listener_cls(wake, lambda t: self.run(t), self.listening, self.speaker,
+        def _voice(t):
+            self._from_voice = True; self.run(t)
+        self.listener = listener_cls(wake, _voice, self.listening, self.speaker,
                                      clap_threshold=cfg.get("clap_threshold", 0.55),
                                      whisper_model=cfg.get("whisper", "small"), vocab=names,
-                                     claps=cfg.get("claps", True))
+                                     claps=cfg.get("claps", False))   # aplausos: apagados salvo que los prendas
+        self.listener.in_meeting = self.in_meeting
+        self.listener.on_audio = self._on_audio
         self.listener.on_heard = lambda t: self.notch("No te entendí, probá de nuevo", "", 3)
         self.listener.on_wake_hint = lambda: (self.call("mate", "listening", 4), self.notch("Te escucho…", "listen", 4))
         self.voice_err = self.listener.start() if cfg.get("voice", True) else "voz apagada"
@@ -235,6 +239,7 @@ class WebUI:
                                             "claps", "voice_id", "voice_speed", "look", "expresivo", "argentinidad",
                                             "gestos", "toque", "ojos", "desktop", "mail_nivel", "tema", "ciudad")}
         cfg["voices"] = voices()
+        cfg["gemini_on"] = bool((self.cfg.get("gemini_key") or "").strip())   # la clave nunca viaja a la página
         return {"tasks": d["tasks"], "habits": habits, "memory": d["memory"],
                 "reminders": [{"time": dt.datetime.fromtimestamp(r["ts"]).strftime("%H:%M"), "text": r["text"]} for r in rem],
                 "focus": focus, "focus_stats": stats, "accounts": a.gmail.accounts(),
@@ -267,9 +272,38 @@ class WebUI:
         self.call("user", text); self.call("mate", "thinking"); self.notch("Entendiendo el pedido…", "think", 120)
         self.background(lambda: self.agent.handle(text), speak)
 
+    def _on_audio(self, audio, by_wake):
+        """Voz con Gemini. Devuelve None para que el micrófono use Whisper local (sin clave o si Gemini falla)."""
+        if not self.agent.gemini_key() or self.busy: return None
+        self.busy = True
+        self.call("mate", "thinking"); self.notch("Entendiendo…", "think", 30)
+        try:
+            heard, out = self.agent.handle_audio(audio)
+        except Exception as e:
+            heard, out = None, None
+        if heard is None:                            # Gemini no respondió: sigue con la voz local
+            self.busy = False; return None
+        if not heard:                                # ruido o no era para Mate
+            self.busy = False
+            if not by_wake: self.notch("No te entendí, probá de nuevo", "", 3)
+            self.call("mate", "idle", 1)
+            return True
+        self.last_text = heard; self._from_voice = True
+        self.history.append({"who": "u", "text": heard}); self.call("user", heard)
+        self.show(out or "Listo", speak=True)
+        return True
+
+    def in_meeting(self):
+        """¿Estás en una reunión? (Granola grabando o un evento del calendario que está pasando ahora)."""
+        if self.recording: return True
+        try: return any(e.get("in") == "ahora" for e in self.events_view())
+        except Exception: return False
+
     def show(self, res, speak=True):
         from mate_audio import log; log("RESPUESTA:", res[:120])
         self.busy = False
+        from_voice, self._from_voice = getattr(self, "_from_voice", False), False
+        if self.in_meeting(): speak = False          # en reunión Mate no habla: sólo lo muestra en la isla
         ok = res.startswith(("✓", "🎉", "♫"))
         bad = res.startswith("✗")
         self.history.append({"who": "m", "text": res, "ok": ok})
@@ -283,7 +317,8 @@ class WebUI:
         import re as _re
         cierre = _re.match(r"^\W*(gracias|muchas gracias|nada|nada m[aá]s|eso es todo|listo|chau|hasta luego)\W*$",
                            (getattr(self, "last_text", "") or "").lower())
-        if speak and self.cfg.get("conversacion", True) and not self.card_on and not cierre:
+        # Seguir escuchando sólo si VOS le hablaste recién (no después de avisos, resumen del día ni errores)
+        if speak and from_voice and not bad and self.cfg.get("conversacion", True) and not self.card_on and not cierre:
             threading.Thread(target=self._follow_up, daemon=True).start()
 
     def _follow_up(self):
@@ -311,7 +346,7 @@ class WebUI:
                 if IS_MAC: mac.beep()
                 else: import winsound; winsound.MessageBeep(winsound.MB_ICONASTERISK)
             except Exception: pass
-        self.speaker.say(msg)
+        if not self.in_meeting(): self.speaker.say(msg)
 
     def copy(self, text):
         if IS_MAC: return mac.clipboard_set_text(text)
@@ -693,6 +728,20 @@ class Api:
                 ui.show(f"✗ No pude conectar Spotify. {msg[:140]}", speak=False)
             ui.push()
         threading.Thread(target=work, daemon=True).start()
+
+    def open_url(self, url):
+        import webbrowser
+        if url.startswith("https://"): webbrowser.open(url)
+
+    def gemini_set(self, key):
+        """Guarda la clave de Gemini si funciona. Vacía = vuelve a la voz 100% local."""
+        key = (key or "").strip()
+        if not key:
+            self.cfg("gemini_key", ""); return {"ok": True, "msg": "Voz local (sin Gemini)"}
+        import mate_gemini as G
+        ok, err = G.check_key(key, self._ui.cfg.get("gemini_model"))
+        if ok: self.cfg("gemini_key", key)
+        return {"ok": ok, "msg": "✓ Gemini conectado: ahora te entiende como un humano" if ok else f"✗ {err}"}
 
     def spotify_disconnect(self):
         from mate_servicios import Spotify

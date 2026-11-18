@@ -927,6 +927,19 @@ function cityHide(id, save){
   $(id+"L").innerHTML="";
   if(save && !$(id).value.trim()) api('city_set', "", "");   // vacío = automática
 }
+function geminiBlock(c){
+  const on = c.gemini_on;
+  return `<div class="set" style="align-items:flex-start"><div><b>Entender la voz con Gemini</b>
+    <small>${on?"Activado: te entiende como un humano y responde en 1 o 2 segundos.":"Opcional. Sacá una clave gratis en <a href='#' onclick=\"api('open_url','https://aistudio.google.com/apikey');return false\">aistudio.google.com/apikey</a> y pegala acá. Sólo se manda el audio de lo que le pedís después de decir “Mate”."}</small>
+    <div id="gemRes" class="muted" style="font-size:12px;margin-top:6px"></div></div>
+    ${on?`<button class="btn ghost" onclick="gemSet('')">Desactivar</button>`
+        :`<div style="display:flex;gap:6px"><input id="gemKey" class="inp" type="password" placeholder="Pegá tu clave" style="max-width:170px"><button class="btn ghost" onclick="gemSet($('gemKey').value)">Activar</button></div>`}</div>`;
+}
+async function gemSet(k){
+  $("gemRes") && ($("gemRes").textContent = k ? "Probando la clave…" : "");
+  const r = await api('gemini_set', k);
+  if (r && $("gemRes")) $("gemRes").textContent = r.msg;
+}
 function onboard(){
   const n=$("obName").value.trim(); if(!n){ $("obName").focus(); return; }
   const c=cityPick.obCity;
@@ -966,7 +979,7 @@ function renderSettings(){
   const vs=(c.voices||[]).map(v=>`<option value="${v.id}" ${v.id===(c.voice_id||"es_AR-daniela-high")?"selected":""}>${esc(v.name)}</option>`).join("");
   const lvl=(k,opts,cur)=>`<div class="lvl">${opts.map(([v,t,d])=>`<div class="${cur===v?"on":""}" onclick="api('cfg','${k}','${v}')"><b>${t}</b>${d}</div>`).join("")}</div>`;
   $("setList").innerHTML =
-    `<div class="lbl">Cuentas</div>` + googleBlock() + spotifyBlock() +
+    `<div class="lbl">Cuentas</div>` + googleBlock() + spotifyBlock() + geminiBlock(c) +
     `<div class="set"><div><b>Tu nombre</b><small>Para saludarte y encontrar tus tareas en las notas de reunión</small></div><input class="inp" style="max-width:160px" value="${esc(c.user_name||S.name||"")}" onchange="api('cfg','user_name',this.value.trim())"></div>` +
     `<div class="set" style="align-items:flex-start"><div><b>Tu ciudad</b><small>Para el clima. Vacía = automática según tu conexión</small></div>${cityPicker("setCity", c.ciudad||"", true)}</div>` +
     `<div class="lbl">Personalidad</div>` + lvl("argentinidad",[["sobrio","Sobrio","“Agendado.”"],["normal","Normal","“Dale, anotado para el jueves.”"],["alto","Con todo","“¡Joya! Quedó para el jueves 🧉”"]],c.argentinidad||"normal") +
@@ -981,7 +994,7 @@ function renderSettings(){
      </div></div>` +
     `<div class="lbl">Apariencia</div>` + `<div class="set"><div><b>Tema</b><small>Automático sigue el modo claro u oscuro de Windows</small></div>${chips("tema",[["auto","Automático"],["oscuro","Cuero (oscuro)"],["claro","Papel (claro)"]],c.tema||"auto")}</div>` +
     `<div class="lbl">Voz y avisos</div>` + sw("voice","Escuchar","Responde a «"+(c.wake_word||"mate")+"» (requiere reiniciar)") +
-    sw("claps","Activar con dos aplausos","Si se activa solo, apagalo o bajá la sensibilidad") +
+    `<div class="set"><div><b>Activar con dos aplausos</b><small>Apagado de fábrica: en reuniones se activaba solo. En reunión nunca se activa con aplausos</small></div><span class="sw ${c.claps===true?"on":""}" onclick="this.classList.toggle('on');api('cfg','claps',${c.claps!==true})"></span></div>` +
     `<div class="set"><div><b>Sensibilidad a los aplausos</b><small>Más a la derecha = aplausos más suaves</small></div><input type="range" min="0.15" max="0.7" step="0.05" value="${(0.85-(c.clap_threshold||0.55)).toFixed(2)}" onchange="api('cfg','clap_threshold',+(0.85-this.value).toFixed(2))"></div>` +
     sw("speak","Responder con voz","Cuando le hablás, te contesta en voz alta") +
     `<div class="set"><div><b>Voz de Mate</b><small>Voces que corren en tu compu</small></div><div style="display:flex;gap:8px;align-items:center"><select id="vsel" onchange="api('cfg','voice_id',this.value);api('voice_sample',this.value)">${vs}</select><button class="btn ghost" onclick="api('voice_sample',$('vsel').value)">▶ Escuchar</button></div></div>` +
