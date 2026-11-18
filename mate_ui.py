@@ -154,14 +154,41 @@ class WebUI:
             except Exception:
                 pass
 
+    def _click_outside(self):
+        """¿Hiciste click (izquierdo o derecho) fuera de la ventana de Mate? (sólo cuenta el momento de apretar)"""
+        if IS_MAC:
+            try:
+                from Quartz import CGEventSourceButtonState, kCGEventSourceStateCombinedSessionState
+                down = CGEventSourceButtonState(kCGEventSourceStateCombinedSessionState, 0) or \
+                       CGEventSourceButtonState(kCGEventSourceStateCombinedSessionState, 1)
+            except Exception:
+                return False
+            px, py = mac.cursor_pos()
+            left = (_screen() - self.cur[0]) / 2
+            inside = left <= px <= left + self.cur[0] and py <= self.cur[1]
+        else:
+            down = bool(user32.GetAsyncKeyState(0x01) & 0x8000 or user32.GetAsyncKeyState(0x02) & 0x8000)
+            pt, r = wintypes.POINT(), wintypes.RECT()
+            user32.GetCursorPos(ctypes.byref(pt)); user32.GetWindowRect(self.hwnd(), ctypes.byref(r))
+            inside = r.left <= pt.x < r.right and r.top <= pt.y < r.bottom
+        pressed = down and not getattr(self, "_was_down", False)
+        self._was_down = down
+        return pressed and not inside
+
     def _esc_watch(self):
-        """Esc achica la isla aunque el foco esté en otro lado del panel."""
-        if IS_MAC: return   # en Mac la ventana recibe la tecla y la maneja la página
+        """Esc, o un click en cualquier lugar fuera de Mate, achica el panel a la isla."""
         while True:
             time.sleep(0.05)
-            if self.expanded and user32.GetAsyncKeyState(0x1B) & 0x8000                     and user32.GetForegroundWindow() == self.hwnd():
-                if self.pending or self.card_on: continue
-                self.collapse(); time.sleep(0.4)
+            try:
+                if not self.expanded:
+                    self._was_down = False; continue
+                esc = (not IS_MAC) and user32.GetAsyncKeyState(0x1B) & 0x8000 \
+                      and user32.GetForegroundWindow() == self.hwnd()   # en Mac el Esc lo maneja la página
+                afuera = self._click_outside()
+                if (esc or afuera) and not (self.pending or self.card_on or self.dropping):
+                    self.collapse(); time.sleep(0.4)
+            except Exception:
+                pass
 
     def collapse(self):
         if not self.expanded or self.pending: return
