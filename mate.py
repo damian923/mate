@@ -10,6 +10,11 @@ import mate_servicios as sv
 import mate_argento as ar
 from mate_audio import Listener, Speaker, log
 
+
+def _re_bloq(text):
+    import re
+    return bool(re.search(r"bloque|lock", text or "", re.I))
+
 CFG = sv.config()
 MODEL = os.environ.get("MATE_MODEL", CFG.get("model", "llama3.2:3b"))
 MODEL_LONG = CFG.get("model_long", "hf.co/unsloth/Qwen3.5-2B-GGUF:Q4_K_M")   # reuniones y textos largos
@@ -89,7 +94,9 @@ Acciones:
 - app_type {"app","text","keys"} (escribir texto o usar atajo en una app; keys: ^n = Ctrl+N, {ENTER})
 - web_open {"query"} | web_answer {"question"}  (web_answer: clima, noticias, resultados, precios)
 - music_play {"query","kind"} | music_control {"what": pause|resume|next|prev}
-- volume {"direction": up|down|mute} | lock_pc {}
+- volume {"direction": up|down|mute}
+- close_app {"name"}             (cerrar una app: "cerrá Chrome")
+- lock_pc {}                     (SOLO si pide "bloqueá la compu")
 - dolar {}                       (cotización del dólar hoy: oficial, blue, MEP)
 - mail_check {"account"} | mail_read {"index"} | mail_reply {"index","instructions"} | mail_connect {"alias"}
 - clipboard {"instructions"}
@@ -211,6 +218,8 @@ class Agent:
         (r"^(?:cambi[aá]|pas[aá]) a (.+?)(?: en spotify)?$", "music_play", "query"),
         (r"^(?:pon[eé]|reproduc[ií]|tir[aá]|met[eé]) (?:m[uú]sica de |a |el tema |la canci[oó]n )?(.+?)(?: en spotify)?$", "music_play", "query"),
         (r"^(?:paus[aá]|par[aá] la m[uú]sica|pausa(?:r)? la m[uú]sica)$", "music_control", "what=pause"),
+        (r"^(?:cerr[aá]|cerrame|cerr[aá]me|sal[ií] de|mat[aá])\s+(?:el |la |los |las )?(?:app |programa |aplicaci[oó]n )?([\w .+-]{2,30})$", "close_app", "name"),
+        (r"^(?:bloque[aá]|bloquear)(?: la)? (?:compu|pc|computadora|pantalla)$", "lock_pc", None),
         (r"^(?:abr[ií]|abrime|abr[ií]me|ejecut[aá]|inici[aá])\s+(?:el |la |los |las )?(?:app |programa |aplicaci[oó]n )?([\w .+-]{2,30})$", "open_app", "name"),
         (r"^(?:siguiente|pr[oó]xima|pas[aá] (?:de )?(?:tema|canci[oó]n))$", "music_control", "what=next"),
         (r"^(?:segu[ií]|reanud[aá]|dale play)(?: la m[uú]sica)?$", "music_control", "what=resume"),
@@ -313,6 +322,7 @@ class Agent:
         return None
 
     def handle(self, text):
+        self.last_text = text
         quick = self.charla(text)
         if quick:
             self.history += [{"role": "user", "content": text}, {"role": "assistant", "content": quick}]
@@ -560,7 +570,28 @@ class Agent:
                    "\n\nRespondé en 2 o 3 frases usando solo esa información.")
 
     def do_volume(self, a): sv.volume(a.get("direction", "up")); return "✓"
-    def do_lock_pc(self, a): sv.lock_pc(); return "✓ Bloqueada"
+    def do_lock_pc(self, a):
+        if not _re_bloq(getattr(self, "last_text", "")):   # el modelo a veces confunde "cerrá X" con bloquear
+            return "No entendí si querés bloquear la compu. Decime \"bloqueá la compu\""
+        sv.lock_pc(); return "✓ Bloqueada"
+
+    def do_close_app(self, a):
+        """Cierra una app como si tocaras la X (le deja guardar). Nunca cierra a Mate ni a Windows."""
+        import psutil, ctypes, ctypes.wintypes as W
+        name = (a.get("name") or "").lower().strip()
+        if not name: return "¿Qué app cierro?"
+        pids = {p.pid for p in psutil.process_iter(["name"])
+                if name.split()[0] in (p.info["name"] or "").lower()
+                and (p.info["name"] or "").lower() not in ("explorer.exe", "python.exe", "pythonw.exe", "dwm.exe")}
+        if not pids: return f"No encontré {a.get('name')} abierto"
+        u = ctypes.windll.user32; hits = []
+        def cb(h, _):
+            p = W.DWORD(); u.GetWindowThreadProcessId(h, ctypes.byref(p))
+            if p.value in pids and u.IsWindowVisible(h) and u.GetWindowTextLengthW(h): hits.append(h)
+            return True
+        u.EnumWindows(ctypes.WINFUNCTYPE(ctypes.c_bool, W.HWND, W.LPARAM)(cb), 0)
+        for h in hits: u.PostMessageW(h, 0x0010, 0, 0)   # WM_CLOSE
+        return f"✓ Cerré {a.get('name')}" if hits else f"{a.get('name')} está abierto pero sin ventanas para cerrar"
     def do_dolar(self, a): return ar.dolar()
 
     def do_clipboard(self, a):
