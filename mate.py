@@ -801,6 +801,23 @@ class Agent:
                 log(f"spotify api: {e}")
         return mate_control.spotify_play(a.get("query", ""))
 
+    def wa_recent_add(self, name):
+        """Guarda a quién le mandaste por WhatsApp (los últimos 12, el más reciente primero)."""
+        r = [n for n in self.d.get("wa_recent", []) if n.lower() != name.lower()]
+        self.d["wa_recent"] = ([name] + r)[:12]; save(self.d)
+
+    def wa_contacts(self):
+        """Recientes (de Mate) + chats de WhatsApp (si está abierto se actualiza la lista guardada)."""
+        import mate_control as C
+        try:
+            chats = C.whatsapp_chats()
+            if chats: self.d["wa_chats"] = chats; save(self.d)
+        except Exception:
+            pass
+        recent = self.d.get("wa_recent", [])
+        chats = [c for c in self.d.get("wa_chats", []) if c.lower() not in {r.lower() for r in recent}]
+        return {"recent": recent, "chats": chats}
+
     def do_whatsapp_send(self, a):
         """Mensaje (y archivo opcional) por WhatsApp de escritorio. Siempre con confirmación y 5 s para deshacer."""
         import mate_control as C
@@ -819,7 +836,7 @@ class Agent:
         undo = getattr(self.ui, "undo_window", None)
         if undo and not undo(f"Mandando a {to}…", 5):
             C.whatsapp_discard(); return "Ok, cancelado: no lo mandé"
-        return C.whatsapp_send_now()
+        res = C.whatsapp_send_now(); self.wa_recent_add(to); return res
 
     def do_slack_send(self, a):
         import mate_control as C

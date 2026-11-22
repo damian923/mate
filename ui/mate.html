@@ -266,6 +266,9 @@ select{background:var(--surface-3);border-radius:9px;padding:6px 10px;font-size:
 /* soltar archivos */
 #drop{position:fixed;inset:0;display:none;background:var(--island);color:#efe6d8;z-index:20;padding:14px 18px;flex-direction:column;align-items:center;justify-content:center;gap:10px;text-align:center}
 body.dropping #drop{display:flex}
+.fact.clip{cursor:pointer;flex-direction:column;align-items:flex-start;gap:2px}
+.fact.clip span{white-space:pre-wrap;word-break:break-word;font-size:12.5px}
+.fact.clip:hover{background:var(--surface-3)}
 .pform{display:flex;flex-direction:column;gap:8px;margin:0 0 14px}
 .pform textarea{resize:vertical;font:inherit}
 .fact.proj{align-items:flex-start}
@@ -297,6 +300,16 @@ body.dropping #drop{display:flex}
 #drop .tile b{font-size:18px;color:#c48a57;pointer-events:none}
 #drop .tile.hot{border-style:solid;border-color:#c48a57;background:rgba(196,138,87,.18);transform:scale(1.05)}
 #drop .tile.dan.hot{border-color:#d66a52;background:rgba(214,106,82,.18)}
+#drop .wa{display:flex;flex-direction:column;gap:8px;width:100%;text-align:left}
+#drop .wa-h{font-size:12.5px;color:#c48a57}
+#drop .wa .inp{background:#211a14;border-radius:8px;padding:7px 10px;color:#efe6d8;width:100%}
+#drop .wa-l{max-height:118px;overflow:auto;display:flex;flex-wrap:wrap;gap:6px;align-content:flex-start}
+#drop .wa-t{width:100%;font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;color:#a09380;margin-top:2px}
+#drop .wa-c{background:#2d241c;border-radius:999px;padding:4px 10px;font-size:12px;cursor:pointer;transition:background .15s}
+#drop .wa-c:hover{background:#c48a57;color:#0b0806}
+#drop .wa-c.rec{border:1px solid rgba(143,168,120,.5)}
+#drop .wa-s{display:flex;gap:6px;align-items:center;font-size:12.5px}
+#drop .wa-s .inp{flex:1}
 #drop .res{max-width:94%;max-height:120px;overflow:auto;background:#17120e;border-radius:10px;padding:8px 12px;font-size:12.5px;text-align:left;white-space:pre-wrap;user-select:text}
 #drop .chip2{background:#2d241c;color:#efe6d8}
 
@@ -357,6 +370,7 @@ kbd{font:600 10.5px var(--mono);opacity:.7}
       <button data-v="enfoque">Enfoque</button>
       <button data-v="mipc">Mi PC</button>
       <button data-v="proyectos">Proyectos</button>
+      <button data-v="portapapeles">Portapapeles</button>
       <button data-v="memoria">Memoria</button>
       <button data-v="ajustes">Ajustes</button>
       <button onclick="event.stopPropagation();openModal({id:'_quit',kind:'confirm',title:'¿Cierro Mate?',text:'Se cierra del todo. Para abrirlo de nuevo: menú Inicio → Mate (o se abre solo al prender la compu).',ok:'Cerrar Mate'})" style="color:#d66a52">Cerrar Mate</button>
@@ -425,6 +439,13 @@ kbd{font:600 10.5px var(--mono);opacity:.7}
       <div class="head"><div><h1>Memoria</h1><div class="sub">Lo que Mate sabe de vos. Lo usa en todo lo que hace.</div></div></div>
       <form class="ask" style="margin:0 0 10px" onsubmit="addFact(event)"><input id="fq" placeholder="Acordate que…" autocomplete="off"><button class="mic"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/></svg></button></form>
       <div id="factList"></div>
+    </section>
+
+    <!-- PORTAPAPELES -->
+    <section id="v-portapapeles">
+      <div class="head"><div><h1>Portapapeles</h1><div class="sub">Lo último que copiaste. Tocá uno para volver a copiarlo. Sólo vive mientras Mate está abierto (no se guarda) y no registra lo que parece una contraseña.</div></div>
+        <button class="pill" onclick="api('clip_clear')">Borrar todo</button></div>
+      <div id="clipList"></div>
     </section>
 
     <!-- PROYECTOS -->
@@ -761,7 +782,7 @@ function toggleMenu(e){ e.stopPropagation(); $("menu").classList.toggle("on"); }
 document.addEventListener("click",e=>{ if(!e.target.closest("#menu") && e.target.id!=="moreBtn") $("menu").classList.remove("on"); });
 function go(v){ view=v;
   document.querySelectorAll("nav.tabs button[data-v]").forEach(b=>b.classList.toggle("on",b.dataset.v===v));
-  $("moreBtn").classList.toggle("on", ["tareas","enfoque","mipc","memoria","proyectos","ajustes"].includes(v));
+  $("moreBtn").classList.toggle("on", ["tareas","enfoque","mipc","memoria","proyectos","portapapeles","ajustes"].includes(v));
   document.querySelectorAll(".menu button").forEach(b=>b.classList.toggle("on",b.dataset.v===v));
   document.querySelectorAll("section").forEach(s=>s.classList.toggle("on",s.id==="v-"+v));
   if(v==="correo") api("mail_refresh"); render(); }
@@ -817,7 +838,7 @@ function render(){
   const tono = late ? `Tenés ${late} atrasada${late>1?"s":""}.` : forToday.length>3 ? "Día cargadito." : forToday.length ? "Hoy pinta liviano." : "Agenda libre 🧉";
   $("hello").innerHTML = `${esc(hola)} <em>${esc(tono)}</em>`;
   if (!$("chat").children.length && S.history) S.history.forEach(m=>addMsg(m.who,m.text,m.ok));
-  renderHoy(today, forToday); renderTasks(today); renderWeek(today); renderHabits(); renderFocus(); renderMail(); renderFacts(); renderProjects(); renderSettings(); renderMedia(); renderPC();
+  renderHoy(today, forToday); renderTasks(today); renderWeek(today); renderHabits(); renderFocus(); renderMail(); renderFacts(); renderProjects(); renderClip(); renderSettings(); renderMedia(); renderPC();
   islandTick();
 }
 
@@ -996,6 +1017,12 @@ function renderMail(){
     <div class="info"><b>${esc(m.from.split("<")[0].replace(/"/g,""))}<span class="acc">${esc(m.account)}</span></b><span>${esc(m.subject)} — ${esc(m.snippet)}</span></div>
     <button class="btn ghost" onclick="api('mail_reply',${i})">Responder</button></div>`).join("") || `<div class="empty">${S.accounts.length?"No tenés mails sin leer 🙌":"Todavía no hay cuentas conectadas"}</div>`;
 }
+function renderClip(){
+  const hace = s => s < 60 ? "recién" : s < 3600 ? `hace ${Math.floor(s/60)} min` : `hace ${Math.floor(s/3600)} h`;
+  $("clipList").innerHTML = (S.clip||[]).map((c,i)=>`<div class="fact clip" onclick="api('clip_copy',${i})" title="Volver a copiar">
+      <span>${esc(c.text.length>220 ? c.text.slice(0,220)+"…" : c.text)}</span><small class="muted">${hace(c.ago)}</small></div>`).join("")
+    || '<div class="empty">Todavía no copiaste nada desde que abriste Mate.</div>';
+}
 function renderProjects(){
   const ps = S.projects || [];
   const cuenta = p => (S.tasks||[]).filter(t => t.status!=="hecha" && t.from===p.name).length;
@@ -1029,7 +1056,9 @@ function renderSettings(){
     `<div class="lbl">Personalidad</div>` + lvl("argentinidad",[["sobrio","Sobrio","“Agendado.”"],["normal","Normal","“Dale, anotado para el jueves.”"],["alto","Con todo","“¡Joya! Quedó para el jueves 🧉”"]],c.argentinidad||"normal") +
     `<div class="set"><div><b>Qué tan expresivo</b><small>Cuánto se mueve y hace gestos</small></div>${chips("expresivo",[["tranquilo","Tranquilo"],["normal","Normal"],["animado","Animado"]],c.expresivo||"normal")}</div>` +
     sw("gestos","Gestos por su cuenta","Guiños, bostezos, saltitos y un mate cada tanto") +
-    sw("toque","Reacciona cuando lo tocás","Con tres toques seguidos se marea") + sw("ojos","Sus ojos siguen el cursor","") +
+    sw("toque","Reacciona cuando lo tocás","Con tres toques seguidos se marea") +
+    sw("avisos_sistema","Avisos del sistema en la isla","Volumen, batería baja, internet y auriculares") +
+    sw("letras","Letra de la canción","Mientras suena música, la línea que se canta aparece en la isla") + sw("ojos","Sus ojos siguen el cursor","") +
     `<div class="lbl">Vestuario</div><div class="wardrobe"><canvas id="wardMate" class="px" width="22" height="22"></canvas><div class="opts">
        <b>Color del mate</b><div class="chips">${Object.keys(COLOR_HEX).map(k=>`<span class="sw-dot ${(Lk.color||"madera")===k?"on":""}" title="${k}" style="background:${COLOR_HEX[k]}" onclick="api('cfg_look','color','${k}')"></span>`).join("")}</div>
        <b>Cabeza</b>${chips("head",[["","Nada"],["boina","Boina"],["gorra","Gorra"],["lana","Gorro de lana"],["gaucho","Sombrero gaucho"]],Lk.head||"",1)}
@@ -1196,13 +1225,52 @@ function showDropActions(conv){
 }
 function fileAct(a, extra){
   if (a==="slack"){ openModal({id:"_slack",kind:"ask",title:"Mandar por Slack",text:"¿A quién se lo mando? Si querés, el mensaje después de dos puntos: “Lara: te paso el archivo”",placeholder:"Lara: acá va"}); return; }
-  if (a==="whatsapp"){ openModal({id:"_wa",kind:"ask",title:"Mandar por WhatsApp",text:"¿A quién se lo mando? (como lo tenés agendado) Si querés, el mensaje después de dos puntos: “Mamá: te paso el archivo”",placeholder:"Juan: acá va"}); return; }
+  if (a==="whatsapp"){ waPicker(); return; }
   if (a==="trash"){ openModal({id:"_trash",kind:"confirm",title:"¿Lo mando a la papelera?",text:"Archivo: "+dropFiles.map(f=>f.name).join(", ")+"\nSe puede recuperar desde la papelera de reciclaje.",ok:"A la papelera"}); return; }
   doFileAct(a, extra);
 }
 function doFileAct(a, extra){
   $("dropRes") && ($("dropRes").style.display="block", $("dropRes").textContent="Dale, un toque…"); setMate("thinking");
   api("file_action", a, dropFiles.map(f=>f.path), extra||"");
+}
+// --- elegir a quién mandarle el archivo por WhatsApp: recientes + chats + buscador ---
+let waList = {recent:[], chats:[]}, waTo = "";
+async function waPicker(){
+  const f = dropFiles[0]; const b = $("dropBody");
+  b.innerHTML = `<div class="wa">
+    <div class="wa-h">✆ Mandar <b>${esc(f.name)}</b> por WhatsApp</div>
+    <input id="waQ" class="inp" placeholder="Buscá a quién (como lo tenés agendado)…" autocomplete="off" oninput="waRender()" onkeydown="if(event.key==='Enter'){event.preventDefault();waPick(this.value.trim())}">
+    <div id="waL" class="wa-l"><div class="muted" style="font-size:12px">Buscando tus contactos…</div></div>
+    <div id="waS" class="wa-s" style="display:none"><span>Para <b id="waTo"></b></span>
+      <input id="waM" class="inp" placeholder="Mensaje (opcional)" autocomplete="off" onkeydown="if(event.key==='Enter'){event.preventDefault();waSend()}">
+      <button class="ib pri" onclick="waSend()">Mandar</button></div>
+    <span class="ib" style="background:none;color:#a09380" onclick="showDropActions()">‹ Volver</span></div>`;
+  setTimeout(()=>$("waQ") && $("waQ").focus(), 50);
+  waList = await api('wa_contacts') || {recent:[], chats:[]};
+  waRender();
+}
+function waRender(){
+  const q = ($("waQ").value||"").trim().toLowerCase();
+  const m = n => !q || n.toLowerCase().includes(q);
+  const chip = (n, rec) => `<span class="wa-c ${rec?"rec":""}" onclick="waPick(this.dataset.n)" data-n="${esc(n)}">${rec?"↺ ":""}${esc(n)}</span>`;
+  const rec = waList.recent.filter(m), ch = waList.chats.filter(m).slice(0, 18);
+  let h = "";
+  if (rec.length) h += `<div class="wa-t">Recientes</div>` + rec.map(n=>chip(n,1)).join("");
+  if (ch.length) h += `<div class="wa-t">Tus chats</div>` + ch.map(n=>chip(n,0)).join("");
+  if (q && !rec.concat(ch).some(n=>n.toLowerCase()===q)) h += `<div class="wa-t">Buscar en WhatsApp</div>` + chip($("waQ").value.trim(),0);
+  if (!h) h = `<div class="muted" style="font-size:12px">Escribí el nombre del contacto. (Si abrís WhatsApp una vez, Mate aprende tu lista de chats.)</div>`;
+  $("waL").innerHTML = h;
+}
+function waPick(n){
+  if (!n) return; waTo = n;
+  $("waTo").textContent = n; $("waS").style.display = "flex"; $("waL").style.display = "none"; $("waQ").style.display = "none";
+  setTimeout(()=>$("waM").focus(), 30);
+}
+function waSend(){
+  if (!waTo) return;
+  const msg = $("waM").value.trim();
+  showDropActions(); $("dropRes").style.display="block"; $("dropRes").textContent=`Preparando el mensaje para ${waTo} en WhatsApp…`;
+  api("file_action","whatsapp",dropFiles.map(f=>f.path), waTo + (msg ? ": " + msg : ""));
 }
 function dropClose(){ dropFiles=[]; document.body.classList.remove("dropping"); api("drop_close"); }
 

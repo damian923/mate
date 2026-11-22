@@ -30,7 +30,18 @@ class Media:
         st = s.get_playback_info().playback_status     # 4 = sonando, 5 = pausa
         app = (s.source_app_user_model_id or "").lower()
         nice = next((v for k, v in APPS.items() if k in app), app.split("!")[0].split(".")[0].capitalize())
-        return {"title": p.title or "", "artist": p.artist or "", "app": nice, "playing": int(st) == 4}
+        out = {"title": p.title or "", "artist": p.artist or "", "app": nice, "playing": int(st) == 4}
+        try:   # en qué segundo va la canción (para la letra sincronizada)
+            import time as _t
+            tl = s.get_timeline_properties()
+            pos = tl.position.total_seconds() if hasattr(tl.position, "total_seconds") else tl.position.duration / 1e7
+            upd = tl.last_updated_time.timestamp() if hasattr(tl.last_updated_time, "timestamp") else _t.time()
+            dur = tl.end_time.total_seconds() if hasattr(tl.end_time, "total_seconds") else tl.end_time.duration / 1e7
+            if out["playing"]: pos += max(0, _t.time() - upd)   # Windows actualiza la posición cada tanto
+            out.update(pos=round(pos, 1), dur=round(dur))
+        except Exception:
+            pass
+        return out
 
     def now(self):
         try: return self._run(self._now())

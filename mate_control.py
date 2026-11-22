@@ -356,6 +356,22 @@ def whatsapp_prepare(recipient, text, file=None):
     return True, "listo para enviar"
 
 
+def whatsapp_chats(limit=40):
+    """Nombres de los chats que se ven en WhatsApp de escritorio (sólo si está abierto; no lo trae al frente)."""
+    w = _whatsapp_window()
+    if not w: return []
+    out = []
+    try:
+        for it in w.descendants(control_type="ListItem")[:120]:
+            n = (it.window_text() or "").split("\n")[0].strip()
+            n = re.sub(r"\s+\d{1,2}:\d{2}.*$|\s+(ayer|hoy|lunes|martes|miércoles|jueves|viernes|sábado|domingo)\b.*$", "", n, flags=re.I)
+            if 1 < len(n) <= 40 and n not in out and not n.lower().startswith(("archivad", "archived")): out.append(n)
+            if len(out) >= limit: break
+    except Exception:
+        pass
+    return out
+
+
 def whatsapp_send_now():
     from pywinauto.keyboard import send_keys
     w = _whatsapp_window()
