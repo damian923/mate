@@ -118,6 +118,21 @@ def volume_pct():
         return None
 
 
+LLAMADA = re.compile(r"^Meet\b|\bMeet [-–] |Google Meet|Zoom (Meeting|Reuni[oó]n|Workplace)|Reuni[oó]n de Zoom|"
+                     r"Microsoft Teams.*(llamada|call|reuni[oó]n|meeting)|(llamada|call|reuni[oó]n|meeting).*Microsoft Teams|"
+                     r"Webex|Jitsi|Whereby|Discord.*(voz|voice)", re.I)
+
+
+def in_call_window(own_hwnd=None):
+    """¿La ventana de adelante es una videollamada (Meet, Zoom, Teams, Webex…)?"""
+    if not IS_WIN: return False
+    u = ctypes.windll.user32
+    h = u.GetForegroundWindow()
+    if not h or h == own_hwnd: return False
+    t = ctypes.create_unicode_buffer(256); u.GetWindowTextW(h, t, 256)
+    return bool(LLAMADA.search(t.value or ""))
+
+
 def fullscreen_app(own_hwnd=None):
     """¿La ventana de adelante ocupa toda la pantalla (video, presentación, juego)? -> Mate se corre."""
     if not IS_WIN: return False
