@@ -1,5 +1,10 @@
 # Mate 🧉 – guía rápida
 
+> **Rama `valen`: versión liviana** para compus con **8 GB de RAM y sin placa de video**. Usa un modelo de IA local
+> chico (Llama 3.2 1B), un solo modelo para todo, sólo Parakeet para la voz y libera memoria enseguida.
+> Recomendado: activar Gemini en Ajustes (gratis) para que entienda y responda rápido.
+> Instalar o actualizar: `irm https://raw.githubusercontent.com/damian923/mate/valen/instalar.ps1 | iex`
+
 ## Instalar
 Abrí **PowerShell** (tecla Windows, escribí "PowerShell", Enter), pegá esta línea y apretá Enter:
 

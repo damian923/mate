@@ -1,6 +1,6 @@
 # Instalador de Mate. Se puede correr de dos formas:
 #   1) Con un link (no hace falta bajar nada antes), pegando esto en PowerShell:
-#        irm https://raw.githubusercontent.com/damian923/mate/main/instalar.ps1 | iex
+#        irm https://raw.githubusercontent.com/damian923/mate/valen/instalar.ps1 | iex
 #   2) Desde la carpeta de Mate: doble click en INSTALAR.bat
 $ErrorActionPreference = "Continue"
 $ProgressPreference = "SilentlyContinue"
@@ -18,7 +18,7 @@ if (-not $app -or -not (Test-Path (Join-Path $app "mate.py"))) {
     Write-Host "0/8 Bajando Mate..."
     $app = "$env:LOCALAPPDATA\Mate"
     $tmp = "$env:TEMP\mate-src.zip"
-    Invoke-WebRequest "https://github.com/$repo/archive/refs/heads/main.zip" -OutFile $tmp
+    Invoke-WebRequest "https://github.com/$repo/archive/refs/heads/valen.zip" -OutFile $tmp
     $ex = "$env:TEMP\mate-src"
     Remove-Item $ex -Recurse -Force -ErrorAction SilentlyContinue
     Expand-Archive $tmp $ex -Force
@@ -41,15 +41,14 @@ if (-not (Get-Command ollama -ErrorAction SilentlyContinue)) {
     Refresh-Path; $env:Path += ";$env:LOCALAPPDATA\Programs\Ollama"
 }
 
-Write-Host "3/8 Modelos de IA: Llama 3.2 3B (pedidos, ~2 GB) y Qwen3.5 2B de Unsloth (reuniones y textos largos, ~1,9 GB)..."
-ollama pull llama3.2:3b
-ollama pull hf.co/unsloth/Qwen3.5-2B-GGUF:Q4_K_M
+Write-Host "3/8 Modelo de IA liviano: Llama 3.2 1B (~1,3 GB, para compus con 8 GB de RAM)..."
+ollama pull llama3.2:1b
 
 Write-Host "4/8 Librerias de Python..."
 python -m pip install --upgrade pip -q
 python -m pip install -r "$app\requirements.txt"
 
-Write-Host "5/8 Reconocimiento de voz: Vosk (palabra 'Mate', ~40 MB) y Whisper small (~480 MB)..."
+Write-Host "5/8 Reconocimiento de voz: Vosk (palabra 'Mate', ~40 MB) y Parakeet (~700 MB)..."
 if (-not (Test-Path "$dir\vosk-es")) {
     $zip = "$dir\vosk.zip"
     Invoke-WebRequest "https://alphacephei.com/vosk/models/vosk-model-small-es-0.42.zip" -OutFile $zip
@@ -58,7 +57,6 @@ if (-not (Test-Path "$dir\vosk-es")) {
     Remove-Item $zip
 }
 $env:HF_HUB_DISABLE_SYMLINKS_WARNING = "1"
-python -c "from faster_whisper import WhisperModel; WhisperModel('small', device='cpu', compute_type='int8')"
 python -c "import onnx_asr; onnx_asr.load_model('nemo-parakeet-tdt-0.6b-v3', quantization='int8')"   # Parakeet: voz rapida (~700 MB)
 
 Write-Host "6/8 Voces de Mate (Piper, en espanol)..."
@@ -75,6 +73,11 @@ foreach ($v in "es_AR/daniela/high/es_AR-daniela-high", "es_MX/claude/high/es_MX
 
 Write-Host "7/8 Configuracion..."
 if (-not (Test-Path "$dir\config.json")) { Copy-Item "$app\config.ejemplo.json" "$dir\config.json" }
+else {   # ya tenia Mate: le activo el perfil liviano sin tocar sus cuentas ni ajustes
+    $c = Get-Content "$dir\config.json" -Raw | ConvertFrom-Json
+    foreach ($k in @{perfil='liviano'; model='llama3.2:1b'; whisper='none'}.GetEnumerator()) { $c | Add-Member -NotePropertyName $k.Key -NotePropertyValue $k.Value -Force }
+    [IO.File]::WriteAllText("$dir\config.json", ($c | ConvertTo-Json -Depth 6), (New-Object Text.UTF8Encoding $false))   # sin BOM: si no, Mate no lo lee
+}
 
 Write-Host "8/8 Inicio automatico con Windows..."
 $pyw = (Get-Command pythonw -ErrorAction SilentlyContinue).Source

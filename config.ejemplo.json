@@ -1,5 +1,7 @@
 ﻿{
-  "model": "llama3.2:3b",
+  "perfil": "liviano",
+  "model": "llama3.2:1b",
+  "whisper": "none",
   "name": "Mate",
   "wake_word": "mate",
   "voice": true,
@@ -9,4 +11,3 @@
   "calendar_account": "",
   "spotify": { "client_id": "", "client_secret": "" }
 }
-
