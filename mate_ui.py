@@ -196,12 +196,15 @@ class WebUI:
                         last["dev"] = dev or last["dev"]
                 # pantalla completa (video, presentación, juego): Mate se corre y vuelve cuando terminás
                 if not IS_MAC and n % 3 == 0 and not self.expanded and not self.card_on:
-                    full = S.fullscreen_app(self.hwnd())
+                    full = S.fullscreen_app(self.hwnd()) or \
+                           (self.cfg.get("ocultar_en_llamada", True) and S.in_call_window(self.hwnd()))
                     if full != last["full"]:
-                        user32.ShowWindow(self.hwnd(), 0 if full else 8)
+                        from mate_audio import log; log(f"pantalla completa o llamada: {full} -> {'me escondo' if full else 'vuelvo'}")
+                        user32.ShowWindow(self.hwnd(), 0 if full else 4)
                         last["full"] = full
-            except Exception:
-                pass
+            except Exception as e:
+                from mate_audio import log; log(f"sys_watch: {type(e).__name__}: {e}")
+                time.sleep(2)
 
     def _click_outside(self):
         """¿Hiciste click (izquierdo o derecho) fuera de la ventana de Mate? (sólo cuenta el momento de apretar)"""
@@ -313,7 +316,7 @@ class WebUI:
         from mate_audio import voices
         cfg = {k: self.cfg.get(k) for k in ("voice", "speak", "mail_alerts", "clap_threshold", "model", "wake_word",
                                             "claps", "voice_id", "voice_speed", "look", "expresivo", "argentinidad",
-                                            "gestos", "toque", "ojos", "desktop", "mail_nivel", "tema", "ciudad", "avisos_sistema", "letras")}
+                                            "gestos", "toque", "ojos", "desktop", "mail_nivel", "tema", "ciudad", "avisos_sistema", "letras", "ocultar_en_llamada")}
         cfg["voices"] = voices()
         cfg["gemini_on"] = bool((self.cfg.get("gemini_key") or "").strip())   # la clave nunca viaja a la página
         cfg["granola_on"] = bool((self.cfg.get("granola_key") or "").strip())
