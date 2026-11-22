@@ -9,6 +9,8 @@ import mate_mac as mac
 
 HERE = Path(__file__).parent
 IS_MAC = mac.IS_MAC
+IS_WIN_COM = sys.platform == "win32"
+import re
 if not IS_MAC:
     user32, gdi32, dwm = ctypes.windll.user32, ctypes.windll.gdi32, ctypes.windll.dwmapi
 
@@ -157,6 +159,50 @@ class WebUI:
             except Exception:
                 pass
 
+    def _sys_watch(self):
+        """Vigía liviano (ideas de Nusa): portapapeles, volumen, batería, internet, auriculares y pantalla completa.
+        Sólo avisa cuando algo CAMBIA, con un mensajito corto en la isla."""
+        import mate_sistema as S
+        if IS_WIN_COM:
+            try: import comtypes; comtypes.CoInitialize()
+            except Exception: pass
+        self.clip = S.ClipHistory()
+        last = {"vol": S.volume_pct(), "bat": S.battery(), "net": S.online(), "dev": S.audio_device(), "full": False}
+        n = 0
+        while True:
+            time.sleep(0.4); n += 1
+            try:
+                if self.clip.poll() and self.expanded: self.push()
+                if self.cfg.get("avisos_sistema", True):
+                    v = S.volume_pct()
+                    if v and last["vol"] and (v["pct"] != last["vol"]["pct"] or v["mute"] != last["vol"]["mute"]):
+                        barra = "▮" * round(v["pct"] / 10) + "▯" * (10 - round(v["pct"] / 10))
+                        self.notch("🔇 Silenciado" if v["mute"] else f"🔊 {barra} {v['pct']}%", "", 1.6)
+                    last["vol"] = v or last["vol"]
+                    if n % 10 == 0:          # cada ~4 s: batería, internet y auriculares
+                        b = S.battery()
+                        if b and last["bat"]:
+                            if b["plugged"] and not last["bat"]["plugged"]: self.notch(f"⚡ Cargando · {b['pct']}%", "", 3)
+                            elif not b["plugged"] and b["pct"] in (20, 10, 5) and b["pct"] != last["bat"]["pct"]:
+                                self.alert(f"🪫 Batería al {b['pct']}%: enchufá la compu", False)
+                        last["bat"] = b or last["bat"]
+                        net = S.online()
+                        if net != last["net"]: self.notch("📶 Volvió internet" if net else "⚠ Sin internet", "" if net else "alert", 4)
+                        last["net"] = net
+                        dev = S.audio_device()
+                        if dev and dev != last["dev"]:
+                            auri = re.search(r"auricular|headphone|headset|buds|airpods|bluetooth|hands-free|manos libres", dev, re.I)
+                            self.notch(("🎧 " if auri else "🔈 ") + dev.split("(")[0].strip(), "", 3)
+                        last["dev"] = dev or last["dev"]
+                # pantalla completa (video, presentación, juego): Mate se corre y vuelve cuando terminás
+                if not IS_MAC and n % 3 == 0 and not self.expanded and not self.card_on:
+                    full = S.fullscreen_app(self.hwnd())
+                    if full != last["full"]:
+                        user32.ShowWindow(self.hwnd(), 0 if full else 8)
+                        last["full"] = full
+            except Exception:
+                pass
+
     def _click_outside(self):
         """¿Hiciste click (izquierdo o derecho) fuera de la ventana de Mate? (sólo cuenta el momento de apretar)"""
         if IS_MAC:
@@ -267,11 +313,12 @@ class WebUI:
         from mate_audio import voices
         cfg = {k: self.cfg.get(k) for k in ("voice", "speak", "mail_alerts", "clap_threshold", "model", "wake_word",
                                             "claps", "voice_id", "voice_speed", "look", "expresivo", "argentinidad",
-                                            "gestos", "toque", "ojos", "desktop", "mail_nivel", "tema", "ciudad")}
+                                            "gestos", "toque", "ojos", "desktop", "mail_nivel", "tema", "ciudad", "avisos_sistema", "letras")}
         cfg["voices"] = voices()
         cfg["gemini_on"] = bool((self.cfg.get("gemini_key") or "").strip())   # la clave nunca viaja a la página
         cfg["granola_on"] = bool((self.cfg.get("granola_key") or "").strip())
-        return {"tasks": d["tasks"], "habits": habits, "memory": d["memory"], "projects": d.get("projects", []),
+        clip = [{"text": i["text"][:300], "ago": int(time.time() - i["ts"])} for i in getattr(getattr(self, "clip", None), "items", [])]
+        return {"tasks": d["tasks"], "habits": habits, "memory": d["memory"], "projects": d.get("projects", []), "clip": clip,
                 "reminders": [{"time": dt.datetime.fromtimestamp(r["ts"]).strftime("%H:%M"), "text": r["text"]} for r in rem],
                 "focus": focus, "focus_stats": stats, "accounts": a.gmail.accounts(),
                 "accounts_info": [{"alias": x, "email": a.gmail.label(x)} for x in a.gmail.accounts()],
@@ -516,14 +563,32 @@ class WebUI:
         else:
             from mate_media import Media
             self.media = Media()
-        last = None
+        import mate_letras as LY
+        last, n, letra, linea, base = None, 0, {"key": None, "lines": []}, "", (0, 0)
         while True:
-            now = self.media.now()
-            key = json.dumps(now, sort_keys=True)
-            if key != last:
-                last, self.media_now = key, now
-                self.push()
-            time.sleep(2.5)
+            if n % 5 == 0:   # cada ~2,5 s: qué suena (sin la posición, para no redibujar por cada segundo)
+                now = self.media.now()
+                key = json.dumps({k: v for k, v in (now or {}).items() if k not in ("pos",)}, sort_keys=True)
+                if key != last:
+                    last, self.media_now = key, now
+                    self.push()
+                if now and now.get("pos") is not None: base = (now["pos"], time.time())
+                # letra sincronizada: se busca una vez por canción, en segundo plano
+                tk = (now or {}).get("artist", "") + "|" + (now or {}).get("title", "")
+                if now and now.get("playing") and tk != letra["key"] and self.cfg.get("letras", True):
+                    letra = {"key": tk, "lines": []}
+                    def bajar(l=letra, a=now.get("artist", ""), t=now.get("title", ""), d=now.get("dur")):
+                        l["lines"] = LY.lyrics(a, t, d)
+                    threading.Thread(target=bajar, daemon=True).start()
+            n += 1
+            now = self.media_now
+            if (now and now.get("playing") and letra["lines"] and self.cfg.get("letras", True)
+                    and not self.expanded and not self.card_on and not self.recording and not self.busy):
+                pos = base[0] + (time.time() - base[1])
+                l = LY.line_at(letra["lines"], pos)
+                if l and l != linea: self.notch("♪ " + l, "", 6)
+                linea = l
+            time.sleep(0.5)
 
     # ---------------- soltar archivos sobre la isla ----------------
     def _hook_drop(self):
@@ -592,6 +657,7 @@ class WebUI:
                 if not ok: res = m
                 elif self.confirm(f"¿Lo envío por WhatsApp?\n\nPara: {to.strip()}\nMensaje: {msg.strip() or '(sin texto)'}\nArchivo: {Path(paths[0]).name}"):
                     res = C.whatsapp_send_now()
+                    self.agent.wa_recent_add(to.strip())
                 else:
                     C.whatsapp_discard(); res = "Ok, no lo mandé"
             elif action == "trash":
@@ -619,6 +685,7 @@ class WebUI:
             threading.Thread(target=self.loop, daemon=True).start()
             threading.Thread(target=self._esc_watch, daemon=True).start()
             threading.Thread(target=self._cursor_watch, daemon=True).start()
+            threading.Thread(target=self._sys_watch, daemon=True).start()
             threading.Thread(target=self._media_watch, daemon=True).start()
             self._hook_drop()
         self.api._on_ready = on_ready
@@ -792,6 +859,19 @@ class Api:
         """Cierra Mate del todo (ventana, micrófono y todo)."""
         from mate_audio import log; log("cerrado por el usuario")
         threading.Timer(0.3, lambda: os._exit(0)).start()
+
+    def clip_copy(self, i):
+        """Vuelve a copiar un texto del historial del portapapeles."""
+        items = getattr(self._ui, "clip", None).items if getattr(self._ui, "clip", None) else []
+        if 0 <= i < len(items):
+            self._ui.copy(items[i]["text"]); self._ui.notch("📋 Copiado", "ok", 1.5)
+
+    def clip_clear(self):
+        if getattr(self._ui, "clip", None): self._ui.clip.items = []; self._ui.push()
+
+    def wa_contacts(self):
+        threading.Thread(target=self._ui.take_focus, daemon=True).start()   # para poder escribir en el buscador
+        return self._ui.agent.wa_contacts()
 
     def open_url(self, url):
         import webbrowser
