@@ -113,6 +113,8 @@ class Listener:
         self.on_wake_hint = None   # callback apenas se oye "Mate" (feedback inmediato)
         self.in_meeting = lambda: False   # la interfaz lo reemplaza: en reunión no se activa con aplausos
         self.on_audio = None   # con Gemini: recibe (audio, por_palabra) y devuelve None si hay que usar Whisper
+        self.on_pause = None   # callback cuando hacés una pausa mientras hablás (feedback "te sigo escuchando")
+        self.pausa = 1.5       # segundos de silencio que cuentan como "terminé de hablar"
 
     # ---------------- arranque ----------------
     def start(self):
@@ -165,6 +167,11 @@ class Listener:
                 if self.on_wake_hint:
                     try: self.on_wake_hint()
                     except Exception: pass
+                # Apenas oye "Mate" pasa a GRABAR el pedido entero (con lo dicho hasta ahora). Antes Vosk cortaba
+                # la frase en la primera pausita (~0,5 s) y se perdía el resto: ahora espera a que de verdad termines.
+                self.capture = {"buf": list(self.utter[-60:]), "speech": True, "silence": 0,   # (utter ya trae lo de antes)
+                                "t0": time.time(), "follow": False, "wake": True}
+                self.utter = []; self._reset_req = True
 
     def _load_whisper(self):
         # Parakeet v3 (NVIDIA): ~10 veces más rápido que Whisper small en procesador y con menos errores
@@ -189,6 +196,7 @@ class Listener:
     def transcribe(self, audio):
         """Whisper con pistas de vocabulario. Devuelve '' si es ruido o no está seguro."""
         if audio is None or len(audio) < self.RATE * 0.4: return None
+        audio = self._compact(audio)
         if getattr(self, "parakeet", None) is not None:
             try:
                 return self._fix_names(str(self.parakeet.recognize(audio.astype(np.float32))).strip())
@@ -204,6 +212,20 @@ class Listener:
         if np.mean([s.no_speech_prob for s in segs]) > 0.6 or np.mean([s.avg_logprob for s in segs]) < -1.0:
             return ""
         return " ".join(s.text for s in segs).strip()
+
+    def _compact(self, audio, keep=0.3):
+        """Acorta los silencios largos (pausas al hablar) a 0,3 s: el reconocedor entiende mejor la frase seguida."""
+        win = int(self.RATE * 0.05)
+        n = len(audio) // win
+        if n < 4: return audio
+        frames = audio[:n * win].reshape(n, win)
+        rms = np.sqrt((frames ** 2).mean(axis=1))
+        thr = max(0.008, float(np.percentile(rms, 30)) * 1.5)
+        out, quiet, maxq = [], 0, int(keep / 0.05)
+        for f, r in zip(frames, rms):
+            quiet = quiet + 1 if r < thr else 0
+            if quiet <= maxq: out.append(f)
+        return np.concatenate(out) if out else audio
 
     def _fix_names(self, text):
         """Parakeet no acepta una lista de nombres como Whisper: corrijo después las palabras parecidas
@@ -293,26 +315,34 @@ class Listener:
         if c["speech"]: c["buf"].append(s)
         waited = time.time() - c["t0"]
         wait_start = 5 if c.get("follow") else 8           # cuánto espera a que empieces a hablar
-        if (c["speech"] and c["silence"] >= 8) or waited > 14 or (not c["speech"] and waited > wait_start):
+        # Fin del pedido: ~1,5 s de silencio (antes 0,8 s cortaba en las pausas normales al pensar qué decir)
+        pausa = int(self.pausa * 10)
+        if (c["speech"] and c["silence"] >= pausa) or waited > 30 or (not c["speech"] and waited > wait_start):
             audio = np.concatenate(c["buf"]) if c["speech"] and c["buf"] else None
-            follow = c.get("follow")
+            follow, wake = c.get("follow"), c.get("wake")
             self.capture = None; self.rec.Reset(); self.utter = []
-            threading.Thread(target=self._finish_capture, args=(audio, follow), daemon=True).start()
+            threading.Thread(target=self._finish_capture, args=(audio, follow, wake), daemon=True).start()
+        elif c["speech"] and c["silence"] == 6 and self.on_pause:
+            try: self.on_pause()                               # "te sigo escuchando…": sabés que no te cortó
+            except Exception: pass
 
     MULETILLAS = {"ah", "eh", "em", "mm", "mmm", "no", "sí", "si", "este", "bueno", "o", "y", "a", "la", "el",
                   "ok", "okay", "uh", "ay", "che", "gracias", "chau", "nada"}
 
-    def _finish_capture(self, audio, follow=False):
+    def _finish_capture(self, audio, follow=False, wake=False):
         if audio is None:                                  # no dijiste nada: vuelve tranquilo
             log("sin voz", "(fin de la charla)" if follow else "")
             if self.on_heard and not follow: self.on_heard(None)
             return
         if self.on_audio:                                 # Gemini entiende el audio directo
-            res = self.on_audio(audio, False)
+            res = self.on_audio(audio, bool(wake))        # (si empezó por "Mate", Gemini decide si era para él)
             if res is not None: return
         t0 = time.time()
         text = self.transcribe(audio)
-        log("whisper (pedido):", repr(text), "dur", round(len(audio) / self.RATE, 1), f"tardó {time.time() - t0:.1f}s")
+        log("voz local (pedido):", repr(text), "dur", round(len(audio) / self.RATE, 1), f"tardó {time.time() - t0:.1f}s")
+        if wake:   # empezó porque se oyó "Mate": tiene que estar al principio, si no era charla de otros
+            if not text or not re.search(r"^\W*(?:\w+\W+){0,2}?" + self._wake_rx(), text.lower()):
+                log("ignorado: no empezaba con 'Mate'"); return
         if text and self._has_wake(text): text = self._after_wake(text) or text
         words = re.sub(r"[^\w ]", "", (text or "").lower()).split()
         real = [w for w in words if w not in self.MULETILLAS]
