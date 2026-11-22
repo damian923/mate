@@ -176,9 +176,12 @@ class Listener:
             log("parakeet listo")
         except Exception as e:
             log("parakeet no disponible:", e)
+        if self.parakeet is not None or self.whisper_name == "none":
+            return   # Whisper sólo de respaldo si Parakeet no anda: así no ocupa ~500 MB de memoria al divino botón
         try:
             from faster_whisper import WhisperModel
-            self.whisper = WhisperModel(self.whisper_name, device="cpu", compute_type="int8", cpu_threads=4)
+            hilos = max(2, min(4, (os.cpu_count() or 4) - 1))
+            self.whisper = WhisperModel(self.whisper_name, device="cpu", compute_type="int8", cpu_threads=hilos)
             log("whisper listo:", self.whisper_name)
         except Exception as e:
             log("whisper ERROR:", e); self.whisper = None
@@ -319,5 +322,10 @@ class Listener:
             self.on_heard(None)   # no entendió nada: no ejecuta ruido
 
     def _deliver(self, cmd):
+        # el mismo pedido dos veces seguidas (eco del modo charla) no se procesa de nuevo
+        prev, t = getattr(self, "_last_cmd", ("", 0))
+        if cmd.strip().lower() == prev and time.time() - t < 15:
+            log("repetido, lo ignoro:", cmd); return
+        self._last_cmd = (cmd.strip().lower(), time.time())
         log("PEDIDO:", cmd)
         self.on_command(cmd)

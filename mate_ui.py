@@ -268,7 +268,7 @@ class WebUI:
         cfg["voices"] = voices()
         cfg["gemini_on"] = bool((self.cfg.get("gemini_key") or "").strip())   # la clave nunca viaja a la página
         cfg["granola_on"] = bool((self.cfg.get("granola_key") or "").strip())
-        return {"tasks": d["tasks"], "habits": habits, "memory": d["memory"],
+        return {"tasks": d["tasks"], "habits": habits, "memory": d["memory"], "projects": d.get("projects", []),
                 "reminders": [{"time": dt.datetime.fromtimestamp(r["ts"]).strftime("%H:%M"), "text": r["text"]} for r in rem],
                 "focus": focus, "focus_stats": stats, "accounts": a.gmail.accounts(),
                 "accounts_info": [{"alias": x, "email": a.gmail.label(x)} for x in a.gmail.accounts()],
@@ -293,7 +293,11 @@ class WebUI:
         threading.Thread(target=work, daemon=True).start()
 
     def run(self, text, speak=True):
-        if self.busy: return
+        if self.busy:   # antes se perdía en silencio: ahora queda en cola y te avisa
+            q = self.__dict__.setdefault("_queue", [])
+            q.append((text, speak))
+            self.notch(f"Lo hago después de esto ({len(q)} en cola)", "", 4)
+            return
         self.busy = True
         self.last_text = text
         self.history.append({"who": "u", "text": text})
@@ -318,7 +322,7 @@ class WebUI:
             return True
         self.last_text = heard; self._from_voice = True
         self.history.append({"who": "u", "text": heard}); self.call("user", heard)
-        self.show(out or "Listo", speak=True)
+        self.show(out if out is not None else "Listo", speak=True)
         return True
 
     def in_meeting(self):
@@ -328,9 +332,14 @@ class WebUI:
         except Exception: return False
 
     def show(self, res, speak=True):
-        from mate_audio import log; log("RESPUESTA:", res[:120])
+        from mate_audio import log; log("RESPUESTA:", (res or "(nada)")[:120])
         self.busy = False
         from_voice, self._from_voice = getattr(self, "_from_voice", False), False
+        q = getattr(self, "_queue", [])
+        if q:   # había pedidos esperando: sigo con el próximo
+            nxt = q.pop(0); threading.Timer(0.3, lambda: self.run(*nxt)).start()
+        if not (res or "").strip():                  # no era un pedido: no digo nada
+            self.notch("Ok", "", 1.5); self.call("mate", "idle", 1); return
         if self.in_meeting(): speak = False          # en reunión Mate no habla: sólo lo muestra en la isla
         ok = res.startswith(("✓", "🎉", "♫"))
         bad = res.startswith("✗")
@@ -340,13 +349,17 @@ class WebUI:
         self.notch(word, "ok" if ok else ("alert" if bad else ""), 5)
         self.call("mate", "happy" if ok else "error" if bad else "speaking", 3)
         self.push()
-        if speak and self.cfg.get("speak", True) and res.strip() != "✓":
-            self.speaker.say(res.split("\n\n(")[0].replace("\n", ". "))
         import re as _re
+        if speak and self.cfg.get("speak", True) and res.strip() != "✓":
+            hablar = res.split("\n\n(")[0].split("\n")[0] if ok else res.split("\n\n(")[0].replace("\n", ". ")
+            hablar = _re.sub(r"[\U0001F000-\U0001FAFF☀-➿✓✗♫•]", "", hablar).strip()   # sin emojis ni símbolos
+            if hablar: self.speaker.say(hablar)
         cierre = _re.match(r"^\W*(gracias|muchas gracias|nada|nada m[aá]s|eso es todo|listo|chau|hasta luego)\W*$",
                            (getattr(self, "last_text", "") or "").lower())
         # Seguir escuchando sólo si VOS le hablaste recién (no después de avisos, resumen del día ni errores)
-        if speak and from_voice and not bad and self.cfg.get("conversacion", True) and not self.card_on and not cierre:
+        # y sólo si te hizo una pregunta: si no, el micrófono abierto agarraba charlas y repetía pedidos
+        pregunta = res.strip().endswith("?")
+        if speak and from_voice and pregunta and not bad and self.cfg.get("conversacion", True) and not self.card_on and not cierre:
             threading.Thread(target=self._follow_up, daemon=True).start()
 
     def _follow_up(self):
@@ -653,6 +666,18 @@ class Api:
 
     def habit_add(self, name, goal):
         self._ui.agent.do_habit_add({"name": name, "goal": goal}); self._ui.agent.save(); self._ui.push()
+
+    def project_add_ui(self, name, desc):
+        a = self._ui.agent; a.do_project_add({"name": name, "description": desc}); a.save(); self._ui.push()
+
+    def project_edit(self, i, desc):
+        a = self._ui.agent; ps = a.d.get("projects", [])
+        if 0 <= i < len(ps) and desc and desc != "Tocá para contar de qué trata":
+            ps[i]["description"] = desc; a.save(); self._ui.push()
+
+    def project_delete_ui(self, i):
+        a = self._ui.agent; ps = a.d.get("projects", [])
+        if 0 <= i < len(ps): ps.pop(i); a.save(); self._ui.push()
 
     def memory_delete(self, i):
         a = self._ui.agent

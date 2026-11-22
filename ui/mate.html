@@ -266,6 +266,11 @@ select{background:var(--surface-3);border-radius:9px;padding:6px 10px;font-size:
 /* soltar archivos */
 #drop{position:fixed;inset:0;display:none;background:var(--island);color:#efe6d8;z-index:20;padding:14px 18px;flex-direction:column;align-items:center;justify-content:center;gap:10px;text-align:center}
 body.dropping #drop{display:flex}
+.pform{display:flex;flex-direction:column;gap:8px;margin:0 0 14px}
+.pform textarea{resize:vertical;font:inherit}
+.fact.proj{align-items:flex-start}
+.fact.proj [contenteditable]{outline:none;border-radius:6px;padding:1px 3px;margin-left:-3px}
+.fact.proj [contenteditable]:focus{background:var(--surface-3)}
 #onb{position:fixed;inset:0;z-index:50;background:rgba(11,8,6,.82);display:grid;place-items:center}
 #onb .obx{background:var(--surface-2);border:1px solid var(--line);border-radius:16px;padding:24px;width:min(380px,90vw);display:flex;flex-direction:column;gap:12px}
 #onb label{display:flex;flex-direction:column;gap:6px;font-size:13px}
@@ -351,6 +356,7 @@ kbd{font:600 10.5px var(--mono);opacity:.7}
       <button data-v="tareas">Todas las tareas</button>
       <button data-v="enfoque">Enfoque</button>
       <button data-v="mipc">Mi PC</button>
+      <button data-v="proyectos">Proyectos</button>
       <button data-v="memoria">Memoria</button>
       <button data-v="ajustes">Ajustes</button>
       <button onclick="event.stopPropagation();openModal({id:'_quit',kind:'confirm',title:'¿Cierro Mate?',text:'Se cierra del todo. Para abrirlo de nuevo: menú Inicio → Mate (o se abre solo al prender la compu).',ok:'Cerrar Mate'})" style="color:#d66a52">Cerrar Mate</button>
@@ -419,6 +425,17 @@ kbd{font:600 10.5px var(--mono);opacity:.7}
       <div class="head"><div><h1>Memoria</h1><div class="sub">Lo que Mate sabe de vos. Lo usa en todo lo que hace.</div></div></div>
       <form class="ask" style="margin:0 0 10px" onsubmit="addFact(event)"><input id="fq" placeholder="Acordate que…" autocomplete="off"><button class="mic"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/></svg></button></form>
       <div id="factList"></div>
+    </section>
+
+    <!-- PROYECTOS -->
+    <section id="v-proyectos">
+      <div class="head"><div><h1>Proyectos</h1><div class="sub">Contale a Mate en qué estás trabajando: con esto ubica cada tarea de tus reuniones en su proyecto. También se lo podés decir hablando: “tengo un proyecto X que trata de…”.</div></div></div>
+      <form class="pform" onsubmit="addProject(event)">
+        <input id="pName" class="inp" placeholder="Nombre (ej. Agente Copilot)" autocomplete="off">
+        <textarea id="pDesc" class="inp" rows="2" placeholder="¿De qué trata? Cliente, objetivo, palabras con las que lo nombran en las reuniones…"></textarea>
+        <button class="btn">Agregar proyecto</button>
+      </form>
+      <div id="projList"></div>
     </section>
 
     <!-- MI PC -->
@@ -744,7 +761,7 @@ function toggleMenu(e){ e.stopPropagation(); $("menu").classList.toggle("on"); }
 document.addEventListener("click",e=>{ if(!e.target.closest("#menu") && e.target.id!=="moreBtn") $("menu").classList.remove("on"); });
 function go(v){ view=v;
   document.querySelectorAll("nav.tabs button[data-v]").forEach(b=>b.classList.toggle("on",b.dataset.v===v));
-  $("moreBtn").classList.toggle("on", ["tareas","enfoque","mipc","memoria","ajustes"].includes(v));
+  $("moreBtn").classList.toggle("on", ["tareas","enfoque","mipc","memoria","proyectos","ajustes"].includes(v));
   document.querySelectorAll(".menu button").forEach(b=>b.classList.toggle("on",b.dataset.v===v));
   document.querySelectorAll("section").forEach(s=>s.classList.toggle("on",s.id==="v-"+v));
   if(v==="correo") api("mail_refresh"); render(); }
@@ -800,7 +817,7 @@ function render(){
   const tono = late ? `Tenés ${late} atrasada${late>1?"s":""}.` : forToday.length>3 ? "Día cargadito." : forToday.length ? "Hoy pinta liviano." : "Agenda libre 🧉";
   $("hello").innerHTML = `${esc(hola)} <em>${esc(tono)}</em>`;
   if (!$("chat").children.length && S.history) S.history.forEach(m=>addMsg(m.who,m.text,m.ok));
-  renderHoy(today, forToday); renderTasks(today); renderWeek(today); renderHabits(); renderFocus(); renderMail(); renderFacts(); renderSettings(); renderMedia(); renderPC();
+  renderHoy(today, forToday); renderTasks(today); renderWeek(today); renderHabits(); renderFocus(); renderMail(); renderFacts(); renderProjects(); renderSettings(); renderMedia(); renderPC();
   islandTick();
 }
 
@@ -978,6 +995,19 @@ function renderMail(){
   $("mailList").innerHTML = (S.mails||[]).map((m,i)=>`<div class="mail"><div class="av">${esc((m.from||"?").trim()[0]||"?").toUpperCase()}</div>
     <div class="info"><b>${esc(m.from.split("<")[0].replace(/"/g,""))}<span class="acc">${esc(m.account)}</span></b><span>${esc(m.subject)} — ${esc(m.snippet)}</span></div>
     <button class="btn ghost" onclick="api('mail_reply',${i})">Responder</button></div>`).join("") || `<div class="empty">${S.accounts.length?"No tenés mails sin leer 🙌":"Todavía no hay cuentas conectadas"}</div>`;
+}
+function renderProjects(){
+  const ps = S.projects || [];
+  const cuenta = p => (S.tasks||[]).filter(t => t.status!=="hecha" && t.from===p.name).length;
+  $("projList").innerHTML = ps.map((p,i)=>`<div class="fact proj"><div><b>${esc(p.name)}</b> <span class="muted" style="font-size:11.5px">· ${cuenta(p)} tareas abiertas</span>
+      <div class="muted" style="font-size:12.5px;margin-top:2px" contenteditable="true" onblur="api('project_edit',${i},this.textContent.trim())">${esc(p.description||"Tocá para contar de qué trata")}</div></div>
+      <button class="x" onclick="api('project_delete_ui',${i})" title="Sacar">✕</button></div>`).join("")
+    || '<div class="empty">Todavía no cargaste proyectos. Sumalos acá o decile a Mate “tengo un proyecto…”.</div>';
+}
+function addProject(e){
+  e.preventDefault();
+  const n=$("pName").value.trim(); if(!n){ $("pName").focus(); return; }
+  api('project_add_ui', n, $("pDesc").value.trim()); $("pName").value=""; $("pDesc").value="";
 }
 function renderFacts(){
   $("factList").innerHTML = S.memory.map((m,i)=>`<div class="fact"><span>${esc(m)}</span><button class="x" onclick="api('memory_delete',${i})" title="Olvidar">✕</button></div>`).join("") || '<div class="empty">Contale cosas: “acordate que mi contador se llama Raúl”</div>';
