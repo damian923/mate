@@ -66,8 +66,11 @@ class WebUI:
                                      claps=cfg.get("claps", False))   # aplausos: apagados salvo que los prendas
         self.listener.in_meeting = self.in_meeting
         self.listener.on_audio = self._on_audio
+        self.listener.pausa = float(cfg.get("pausa", 1.5))   # cuánto silencio = "terminé de hablar"
+        self.listener.on_pause = lambda: self.notch("Te sigo escuchando…", "listen", 3)
         self.listener.on_heard = lambda t: self.notch("No te entendí, probá de nuevo", "", 3)
-        self.listener.on_wake_hint = lambda: (self.call("mate", "listening", 4), self.notch("Te escucho…", "listen", 4))
+        self.listener.on_wake_hint = lambda: (self.call("mate", "listening", 12), self.notch("Te escucho…", "listen", 12),
+                                              self.call("listening", True))
         self.voice_err = self.listener.start() if cfg.get("voice", True) else "voz apagada"
         self.window.events.shown += self._shape
         self.window.events.closed += lambda: None
@@ -299,6 +302,7 @@ class WebUI:
             self.notch(f"Lo hago después de esto ({len(q)} en cola)", "", 4)
             return
         self.busy = True
+        self.call("listening", False)
         self.last_text = text
         self.history.append({"who": "u", "text": text})
         self.call("user", text); self.call("mate", "thinking"); self.notch("Entendiendo el pedido…", "think", 120)
@@ -306,6 +310,7 @@ class WebUI:
 
     def _on_audio(self, audio, by_wake):
         """Voz con Gemini. Devuelve None para que el micrófono use Whisper local (sin clave o si Gemini falla)."""
+        self.call("listening", False)
         if not self.agent.gemini_key() or self.busy: return None
         self.busy = True
         self.call("mate", "thinking"); self.notch("Entendiendo…", "think", 30)
@@ -317,6 +322,7 @@ class WebUI:
             self.busy = False; return None
         if not heard:                                # ruido o no era para Mate
             self.busy = False
+            if by_wake: self.notch("", "", 0.1)        # se apaga el "Te escucho…" sin hacer nada
             if not by_wake: self.notch("No te entendí, probá de nuevo", "", 3)
             self.call("mate", "idle", 1)
             return True
