@@ -32,8 +32,16 @@ VOICE_NAMES = {   # archivo -> nombre lindo para Ajustes
 }
 
 
+# Voces de Microsoft (necesitan internet; muy naturales). La única masculina argentina disponible es Tomás.
+VOICES_ONLINE = {
+    "edge:es-AR-TomasNeural": "Tomás (Argentina, hombre · online)",
+    "edge:es-AR-ElenaNeural": "Elena (Argentina, mujer · online)",
+}
+
+
 def voices():
-    return [{"id": p.stem, "name": VOICE_NAMES.get(p.stem, p.stem)} for p in sorted(VOICES_DIR.glob("*.onnx"))]
+    online = [{"id": k, "name": v} for k, v in VOICES_ONLINE.items()]
+    return online + [{"id": p.stem, "name": VOICE_NAMES.get(p.stem, p.stem)} for p in sorted(VOICES_DIR.glob("*.onnx"))]
 
 
 # =============================== VOZ ===============================
@@ -49,13 +57,32 @@ class Speaker:
     def _load(self):
         if self._voice is not None: return self._voice
         from piper import PiperVoice
-        ids = [v["id"] for v in voices()]
-        vid = self.voice_id if self.voice_id in ids else ("es_AR-daniela-high" if "es_AR-daniela-high" in ids else (ids or [None])[0])
+        ids = [p.stem for p in VOICES_DIR.glob("*.onnx")]   # voces locales (respaldo si la online no anda)
+        local = self.voice_id if self.voice_id in ids else None
+        vid = local or ("es_MX-ald-medium" if str(self.voice_id).startswith("edge:") and "es_MX-ald-medium" in ids else None) \
+              or ("es_AR-daniela-high" if "es_AR-daniela-high" in ids else (sorted(ids) or [None])[0])
         if not vid: return None
         self._voice = PiperVoice.load(str(VOICES_DIR / f"{vid}.onnx"))
         return self._voice
 
+    def _synth_online(self, text):
+        """Voz de Microsoft (edge-tts): manda el texto a Microsoft y vuelve el audio. ~1-2 s."""
+        import asyncio, edge_tts, miniaudio
+        voz = self.voice_id.split(":", 1)[1]
+        rate = f"{round((self.speed - 1) * 100):+d}%"
+        async def get():
+            buf = b""
+            async for ch in edge_tts.Communicate(text, voz, rate=rate).stream():
+                if ch["type"] == "audio": buf += ch["data"]
+            return buf
+        mp3 = asyncio.run(get())
+        d = miniaudio.decode(mp3, nchannels=1, output_format=miniaudio.SampleFormat.SIGNED16)
+        return np.frombuffer(d.samples, dtype=np.int16), d.sample_rate
+
     def _synth(self, text):
+        if str(self.voice_id).startswith("edge:"):
+            try: return self._synth_online(text)
+            except Exception as e: log(f"voz online no disponible ({type(e).__name__}): uso la local")
         from piper import SynthesisConfig
         v = self._load()
         chunks = [c.audio_int16_array for c in v.synthesize(text, syn_config=SynthesisConfig(length_scale=1 / self.speed))]
