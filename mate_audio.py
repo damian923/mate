@@ -24,6 +24,7 @@ def log(*a):
         pass
 
 VOICE_NAMES = {   # archivo -> nombre lindo para Ajustes
+    "es_AR-mate-medium": "Mate (Argentina, hombre · offline)",   # la que entrenamos con voz/entrenar_voz_argentina.ipynb
     "es_AR-daniela-high": "Daniela (Argentina)",
     "es_MX-claude-high": "Claude (México)",
     "es_MX-ald-medium": "Aldo (México)",
