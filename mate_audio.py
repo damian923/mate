@@ -32,15 +32,28 @@ VOICE_NAMES = {   # archivo -> nombre lindo para Ajustes
 }
 
 
+# Voces de Microsoft (necesitan internet; muy naturales). La única masculina argentina disponible es Tomás.
+DEFAULT_VOICE = "edge:es-UY-MateoNeural"   # voz de Mate si no elegiste otra (con internet; sin, cae a una local)
+
+VOICES_ONLINE = {
+    "edge:en-US-AndrewMultilingualNeural": "Andrew (hombre, la más natural · online)",
+    "edge:en-US-BrianMultilingualNeural": "Brian (hombre, natural · online)",
+    "edge:es-UY-MateoNeural": "Mateo (Uruguay, hombre · online)",
+    "edge:es-AR-TomasNeural": "Tomás (Argentina, hombre · online)",
+    "edge:es-AR-ElenaNeural": "Elena (Argentina, mujer · online)",
+}
+
+
 def voices():
-    return [{"id": p.stem, "name": VOICE_NAMES.get(p.stem, p.stem)} for p in sorted(VOICES_DIR.glob("*.onnx"))]
+    online = [{"id": k, "name": v} for k, v in VOICES_ONLINE.items()]
+    return online + [{"id": p.stem, "name": VOICE_NAMES.get(p.stem, p.stem)} for p in sorted(VOICES_DIR.glob("*.onnx"))]
 
 
 # =============================== VOZ ===============================
 class Speaker:
     def __init__(self, voice=None, speed=1.0):
         self.q, self.speaking = queue.Queue(), False
-        self.voice_id, self.speed, self._voice = voice, speed, None
+        self.voice_id, self.speed, self._voice = voice or DEFAULT_VOICE, speed, None
         threading.Thread(target=self._run, daemon=True).start()
 
     def set_voice(self, voice_id):
@@ -49,17 +62,83 @@ class Speaker:
     def _load(self):
         if self._voice is not None: return self._voice
         from piper import PiperVoice
-        ids = [v["id"] for v in voices()]
-        vid = self.voice_id if self.voice_id in ids else ("es_AR-daniela-high" if "es_AR-daniela-high" in ids else (ids or [None])[0])
+        ids = [p.stem for p in VOICES_DIR.glob("*.onnx")]   # voces locales (respaldo si la online no anda)
+        if not self.voice_id: self.voice_id = DEFAULT_VOICE
+        local = self.voice_id if self.voice_id in ids else None
+        vid = local or ("es_MX-ald-medium" if str(self.voice_id).startswith("edge:") and "es_MX-ald-medium" in ids else None) \
+              or ("es_AR-daniela-high" if "es_AR-daniela-high" in ids else (sorted(ids) or [None])[0])
         if not vid: return None
         self._voice = PiperVoice.load(str(VOICES_DIR / f"{vid}.onnx"))
         return self._voice
 
-    def _synth(self, text):
-        from piper import SynthesisConfig
-        v = self._load()
+    def _synth_online(self, text, vid=None):
+        """Voz de Microsoft (edge-tts): manda el texto a Microsoft y vuelve el audio. ~1-2 s."""
+        import asyncio, edge_tts, miniaudio
+        voz = (vid or self.voice_id).split(":", 1)[1]
+        rate = f"{round((self.speed - 1) * 100):+d}%"
+        async def get():
+            buf = b""
+            async for ch in edge_tts.Communicate(text, voz, rate=rate).stream():
+                if ch["type"] == "audio": buf += ch["data"]
+            return buf
+        mp3 = asyncio.run(get())
+        d = miniaudio.decode(mp3, nchannels=1, output_format=miniaudio.SampleFormat.SIGNED16)
+        return np.frombuffer(d.samples, dtype=np.int16), d.sample_rate
+
+    def _synth(self, text, vid=None):
+        """Audio de `text` con la voz `vid` (o la de Mate). No cambia la voz elegida."""
+        vid = vid or self.voice_id
+        if str(vid).startswith("edge:"):
+            try: return self._synth_online(text, vid)
+            except Exception as e: log(f"voz online no disponible ({type(e).__name__}): uso la local")
+        from piper import SynthesisConfig, PiperVoice
+        if vid == self.voice_id or str(vid).startswith("edge:"):
+            v = self._load()
+        else:   # muestra de otra voz local: la cargo aparte (cache) sin tocar la de Mate
+            cache = self.__dict__.setdefault("_otras", {})
+            if vid not in cache: cache[vid] = PiperVoice.load(str(VOICES_DIR / f"{vid}.onnx"))
+            v = cache[vid]
         chunks = [c.audio_int16_array for c in v.synthesize(text, syn_config=SynthesisConfig(length_scale=1 / self.speed))]
         return np.concatenate(chunks), v.config.sample_rate
+
+    # ---------------- muestras de voz (Ajustes) ----------------
+    MUESTRA = "¡Hola! Soy Mate. Así sueno con esta voz. ¿Te cebo uno mientras vemos qué tenés para hoy?"
+
+    def preview(self, vid, on_change=None):
+        """Escucha una muestra de `vid` SIN cambiar la voz de Mate. Una sola suena a la vez: si había otra, se corta.
+        on_change(id o None) avisa a la interfaz qué muestra está sonando (para el botón ▶/❚❚)."""
+        import sounddevice as sd
+        self.stop_preview()
+        tok = self._pv_tok = getattr(self, "_pv_tok", 0) + 1
+        self._pv_cb = on_change
+        def run():
+            try:
+                if on_change: on_change(vid, "cargando")
+                audio, sr = self._synth(self.MUESTRA, vid)
+                if tok != self._pv_tok: return                     # la cambiaron mientras se generaba
+                self.speaking = True
+                if on_change: on_change(vid, "sonando")
+                sd.play(audio, sr)
+                fin = time.time() + len(audio) / sr + 0.3
+                while time.time() < fin and tok == self._pv_tok: time.sleep(0.05)
+            except Exception as e:
+                log(f"muestra de voz: {e}")
+            finally:
+                if tok == self._pv_tok:                            # terminó sola: vuelve el ▶
+                    self.speaking = False
+                    if on_change: on_change(None, "")
+        threading.Thread(target=run, daemon=True).start()
+
+    def stop_preview(self):
+        """Corta la muestra que esté sonando (pausa, elegir otra voz, cerrar Ajustes)."""
+        import sounddevice as sd
+        if getattr(self, "_pv_tok", None) is None: return
+        self._pv_tok += 1
+        try: sd.stop()
+        except Exception: pass
+        self.speaking = False
+        cb = getattr(self, "_pv_cb", None)
+        if cb: cb(None, "")
 
     def _run(self):
         import sounddevice as sd
@@ -88,8 +167,7 @@ class Speaker:
         if clean: self.q.put(clean[:500])
 
     def sample(self, voice_id):
-        self.set_voice(voice_id)
-        self.say("¡Hola! Soy Mate. Así sueno con esta voz. ¿Te cebo uno?")
+        self.preview(voice_id)
 
 
 # =============================== ESCUCHA ===============================

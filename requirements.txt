@@ -24,3 +24,5 @@ winrt-Windows.Foundation; sys_platform == "win32"
 pyobjc-framework-Cocoa; sys_platform == "darwin"
 pyobjc-framework-Quartz; sys_platform == "darwin"
 onnx-asr[cpu,hub]
+edge-tts
+miniaudio

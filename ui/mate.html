@@ -269,6 +269,15 @@ body.dropping #drop{display:flex}
 .fact.clip{cursor:pointer;flex-direction:column;align-items:flex-start;gap:2px}
 .fact.clip span{white-space:pre-wrap;word-break:break-word;font-size:12.5px}
 .fact.clip:hover{background:var(--surface-3)}
+.vlist{display:flex;flex-direction:column;gap:4px;margin:-4px 0 10px}
+.vrow{display:flex;align-items:center;gap:10px;padding:6px 10px;border-radius:10px;background:var(--surface-2);border:1px solid transparent;transition:background .15s,border-color .15s}
+.vrow.on{border-color:var(--cuero, #C48A57)}
+.vrow.playing{background:var(--surface-3)}
+.vrow .vplay{width:30px;height:30px;border-radius:50%;background:var(--surface-3);display:grid;place-items:center;font-size:11px;flex:none}
+.vrow.playing .vplay{background:var(--cuero, #C48A57);color:#0b0806}
+.vrow .vname{flex:1;font-size:13px}
+.vrow .vcur{font-size:12px;color:var(--yerba, #8FA878)}
+.vrow .vuse{padding:4px 12px;font-size:12px}
 .pform{display:flex;flex-direction:column;gap:8px;margin:0 0 14px}
 .pform textarea{resize:vertical;font:inherit}
 .fact.proj{align-items:flex-start}
@@ -780,7 +789,8 @@ document.addEventListener("keydown",e=>{
 document.querySelectorAll("nav.tabs button[data-v], .menu button").forEach(b=>b.onclick=()=>{ go(b.dataset.v); $("menu").classList.remove("on"); });
 function toggleMenu(e){ e.stopPropagation(); $("menu").classList.toggle("on"); }
 document.addEventListener("click",e=>{ if(!e.target.closest("#menu") && e.target.id!=="moreBtn") $("menu").classList.remove("on"); });
-function go(v){ view=v;
+function go(v){ if (v!=="ajustes" && vPrev){ api('voice_stop'); vPrev=null; vEstado=""; }   // saliste de Ajustes: se corta la muestra
+  view=v;
   document.querySelectorAll("nav.tabs button[data-v]").forEach(b=>b.classList.toggle("on",b.dataset.v===v));
   $("moreBtn").classList.toggle("on", ["tareas","enfoque","mipc","memoria","proyectos","portapapeles","ajustes"].includes(v));
   document.querySelectorAll(".menu button").forEach(b=>b.classList.toggle("on",b.dataset.v===v));
@@ -966,6 +976,30 @@ function cityHide(id, save){
   $(id+"L").innerHTML="";
   if(save && !$(id).value.trim()) api('city_set', "", "");   // vacío = automática
 }
+// --- voces: una muestra a la vez, con ▶/❚❚, y se corta al elegir otra o salir de Ajustes ---
+let vPrev = null, vEstado = "";
+const DEFAULT_VOICE = "edge:es-UY-MateoNeural";
+function voiceRows(c){
+  const cur = c.voice_id || DEFAULT_VOICE;
+  return (c.voices||[]).map(v=>{
+    const playing = vPrev===v.id, icon = playing ? (vEstado==="cargando" ? "…" : "❚❚") : "▶";
+    return `<div class="vrow ${cur===v.id?"on":""} ${playing?"playing":""}" data-v="${esc(v.id)}">
+      <button class="vplay" title="${playing?"Pausar":"Escuchar muestra"}" onclick="voiceToggle('${esc(v.id)}')">${icon}</button>
+      <span class="vname">${esc(v.name)}</span>
+      ${cur===v.id ? '<span class="vcur">✓ En uso</span>' : `<button class="btn ghost vuse" onclick="voiceUse('${esc(v.id)}')">Usar</button>`}
+    </div>`; }).join("");
+}
+function voiceToggle(id){
+  if (vPrev===id){ api('voice_stop'); vPrev=null; vEstado=""; }
+  else { vPrev=id; vEstado="cargando"; api('voice_preview', id); }
+  refreshVoices();
+}
+function voiceUse(id){
+  api('voice_stop'); vPrev=null; vEstado="";          // al elegir, se corta la muestra que estaba sonando
+  S.cfg.voice_id = id; api('cfg','voice_id',id); refreshVoices();
+}
+function refreshVoices(){ const l=$("vlist"); if(l) l.innerHTML = voiceRows(S.cfg||{}); }
+window.Mate.voicePreview = (id, estado)=>{ vPrev = id; vEstado = estado||""; refreshVoices(); };
 function geminiBlock(c){
   const on = c.gemini_on;
   return `<div class="set" style="align-items:flex-start"><div><b>Entender la voz con Gemini</b>
@@ -1071,8 +1105,9 @@ function renderSettings(){
     `<div class="set"><div><b>Activar con dos aplausos</b><small>Apagado de fábrica: en reuniones se activaba solo. En reunión nunca se activa con aplausos</small></div><span class="sw ${c.claps===true?"on":""}" onclick="this.classList.toggle('on');api('cfg','claps',${c.claps!==true})"></span></div>` +
     `<div class="set"><div><b>Sensibilidad a los aplausos</b><small>Más a la derecha = aplausos más suaves</small></div><input type="range" min="0.15" max="0.7" step="0.05" value="${(0.85-(c.clap_threshold||0.55)).toFixed(2)}" onchange="api('cfg','clap_threshold',+(0.85-this.value).toFixed(2))"></div>` +
     sw("speak","Responder con voz","Cuando le hablás, te contesta en voz alta") +
-    `<div class="set"><div><b>Voz de Mate</b><small>Voces que corren en tu compu</small></div><div style="display:flex;gap:8px;align-items:center"><select id="vsel" onchange="api('cfg','voice_id',this.value);api('voice_sample',this.value)">${vs}</select><button class="btn ghost" onclick="api('voice_sample',$('vsel').value)">▶ Escuchar</button></div></div>` +
-    `<div class="set"><div><b>Velocidad de la voz</b><small>Más rápida o más pausada</small></div><input type="range" min="0.8" max="1.4" step="0.05" value="${c.voice_speed||1}" onchange="api('cfg','voice_speed',+this.value);api('voice_sample',$('vsel').value)"></div>` +
+    `<div class="set" style="align-items:flex-start"><div><b>Voz de Mate</b><small>Tocá ▶ para escuchar una muestra (no cambia la voz) y “Usar” para elegirla. Las “online” necesitan internet.</small></div></div>
+     <div class="vlist" id="vlist">${voiceRows(c)}</div>` +
+    `<div class="set"><div><b>Velocidad de la voz</b><small>Más rápida o más pausada</small></div><input type="range" min="0.8" max="1.4" step="0.05" value="${c.voice_speed||1}" onchange="api('cfg','voice_speed',+this.value); if(vPrev) api('voice_preview',vPrev)"></div>` +
     `<div class="set"><div><b>Avisos de correo</b><small>“Importantes” = tus contactos y palabras como urgente, factura o propuesta</small></div>${chips("mail_nivel",[["todos","Todos"],["importantes","Importantes"],["nada","Ninguno"]],c.mail_nivel||"importantes")}</div>` +
     `<div class="lbl">Sistema</div><div class="set"><div><b>Modelos de IA</b><small>${esc(c.model||"llama3.2:3b")} para pedidos · Qwen3.5 2B para reuniones y textos largos · todo en tu compu</small></div></div>` +
     `<div class="set"><div><b>Tus datos</b><small>Tareas, memoria y hábitos se guardan en tu usuario (.mate)</small></div><button class="btn dan" onclick="api('quit')">Salir de Mate</button></div>`;
