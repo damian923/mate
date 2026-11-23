@@ -34,6 +34,9 @@ VOICE_NAMES = {   # archivo -> nombre lindo para Ajustes
 
 # Voces de Microsoft (necesitan internet; muy naturales). La única masculina argentina disponible es Tomás.
 VOICES_ONLINE = {
+    "edge:en-US-AndrewMultilingualNeural": "Andrew (hombre, la más natural · online)",
+    "edge:en-US-BrianMultilingualNeural": "Brian (hombre, natural · online)",
+    "edge:es-UY-MateoNeural": "Mateo (Uruguay, hombre · online)",
     "edge:es-AR-TomasNeural": "Tomás (Argentina, hombre · online)",
     "edge:es-AR-ElenaNeural": "Elena (Argentina, mujer · online)",
 }
