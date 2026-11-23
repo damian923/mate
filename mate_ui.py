@@ -244,6 +244,8 @@ class WebUI:
 
     def collapse(self):
         if not self.expanded or self.pending: return
+        try: self.speaker.stop_preview()          # si sonaba una muestra de voz, se corta al cerrar el panel
+        except Exception: pass
         self.expanded, self.dropping, self.drop_paths = False, False, []
         self.resize(self.size_idle)
         self.js("document.body.classList.remove('open','dropping'); dropFiles=[]")
@@ -800,7 +802,14 @@ class Api:
         ui.push()
 
     def voice_sample(self, vid):
-        self._ui.speaker.sample(vid)
+        self.voice_preview(vid)
+
+    def voice_preview(self, vid):
+        """▶ de una voz en Ajustes: suena la muestra sin cambiar la voz de Mate (y corta cualquier otra)."""
+        self._ui.speaker.preview(vid, lambda v, estado: self._ui.call("voicePreview", v, estado))
+
+    def voice_stop(self):
+        self._ui.speaker.stop_preview()
 
     def google_connect(self):
         """Un click: abre la pantalla de Google, elegís la cuenta y 'Permitir'."""
