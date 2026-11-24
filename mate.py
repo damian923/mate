@@ -808,10 +808,15 @@ class Agent:
         try:
             today = dt.date.today().isoformat()
             hoy = self.tasks_in("today")
-            atr = sum(1 for t in hoy if t["date"] < today); due = sum(1 for t in hoy if t["date"] == today)
+            atr = [t for t in hoy if t["date"] < today]; due = [t for t in hoy if t["date"] == today]
+            def cuales(ts):   # "estructurar datos, de Jurisprudencia RAG; y ..." (máx. 4 para no hacerla larga)
+                pj = {p_["name"] for p_ in self.d.get("projects", [])}   # "from" puede ser el título de una reunión: sólo nombro proyectos de verdad
+                xs = [t["text"] + (f", del proyecto {t['from']}" if t.get("from") in pj else "") for t in ts[:4]]
+                s_ = "; ".join(xs[:-1]) + ("; y " if len(xs) > 1 else "") + xs[-1]
+                return s_ + (f"; y {len(ts) - 4} más" if len(ts) > 4 else "")
             dicho = [ar.saludo().split("?")[0].replace("¡", "").strip() + "."]
-            if atr: dicho.append(f"Tenés {atr} tarea{'s' if atr > 1 else ''} atrasada{'s' if atr > 1 else ''}.")
-            dicho.append(f"Para hoy, {due} tarea{'s' if due != 1 else ''}." if due else "Para hoy no tenés tareas.")
+            if atr: dicho.append(f"Atrasada{'s' if len(atr) > 1 else ''}: {cuales(atr)}.")
+            dicho.append(f"Para hoy: {cuales(due)}." if due else "Para hoy no tenés tareas.")
             ev = re.search(r"^Calendario: (.+)$", txt, re.M)
             if ev:
                 n = ev.group(1).count(",") + 1
