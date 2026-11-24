@@ -44,6 +44,7 @@ if (-not (Get-Command ollama -ErrorAction SilentlyContinue)) {
 Write-Host "3/8 Modelos de IA: Llama 3.2 3B (pedidos, ~2 GB) y Qwen3.5 2B de Unsloth (reuniones y textos largos, ~1,9 GB)..."
 ollama pull llama3.2:3b
 ollama pull hf.co/unsloth/Qwen3.5-2B-GGUF:Q4_K_M
+ollama pull qwen2.5:1.5b   # el que entiende pedidos sin nube (rapido y con JSON forzado)
 
 Write-Host "4/8 Librerias de Python..."
 python -m pip install --upgrade pip -q

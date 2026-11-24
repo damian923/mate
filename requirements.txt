@@ -26,3 +26,4 @@ pyobjc-framework-Quartz; sys_platform == "darwin"
 onnx-asr[cpu,hub]
 edge-tts
 miniaudio
+fastembed

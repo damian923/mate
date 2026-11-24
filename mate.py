@@ -24,6 +24,8 @@ LIVIANO = CFG.get("perfil") == "liviano"
 MODEL = os.environ.get("MATE_MODEL", CFG.get("model", "llama3.2:1b" if LIVIANO else "llama3.2:3b"))
 MODEL_LONG = CFG.get("model_long", MODEL if LIVIANO else "hf.co/unsloth/Qwen3.5-2B-GGUF:Q4_K_M")   # reuniones y textos largos
 KEEP = CFG.get("keep_alive", "5m" if LIVIANO else "2h")   # cuánto queda la IA local en memoria
+# IA local para entender pedidos: Qwen 2.5 1.5B sigue mucho mejor el formato JSON que llama3.2:3b y es más rápida
+MODEL_ROUTER = CFG.get("model_router", "qwen2.5:1.5b")
 WAKE = CFG.get("wake_word", "mate")
 NAME = CFG.get("name", "Mate")
 ar.NIVEL = CFG.get("argentinidad", "normal")
@@ -209,12 +211,12 @@ def ensure_ollama():
     _ollama_ok = time.time()
 
 
-def llm(messages, as_json=True, temp=0.2):
+def llm(messages, as_json=True, temp=0.2, model=None, schema=None, ctx=3072):
     ensure_ollama()
-    body = {"model": MODEL, "messages": messages, "stream": False, "keep_alive": KEEP,
-            "options": {"temperature": temp, "num_ctx": 3072, "num_predict": 120 if as_json else 160,
+    body = {"model": model or MODEL, "messages": messages, "stream": False, "keep_alive": KEEP,
+            "options": {"temperature": temp, "num_ctx": ctx, "num_predict": 120 if as_json else 160,
                         "num_thread": max(2, (os.cpu_count() or 4) - 1)}}   # contexto justo + todos los núcleos menos uno
-    if as_json: body["format"] = "json"
+    if as_json: body["format"] = schema or "json"   # schema: JSON forzado (la IA no puede devolver otra cosa)
     req = urllib.request.Request(OLLAMA, json.dumps(body).encode(), {"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=180) as r:
         return json.loads(r.read())["message"]["content"]
@@ -275,6 +277,10 @@ class Agent:
         self.apps, self.last_list, self.last_mail_check = None, [], time.time()
         threading.Thread(target=lambda: setattr(self, "apps", sv.Apps()), daemon=True).start()
         # En el perfil liviano con Gemini, la IA local es sólo de respaldo: no la cargo en memoria al arrancar
+        try:
+            import mate_intencion; mate_intencion.precalentar()   # clasificador rápido (la 1ª vez baja ~220 MB)
+        except Exception as e:
+            log(f"clasificador no disponible: {e}")
         if not (LIVIANO and (sv.config().get("gemini_key") or "").strip()):
             threading.Thread(target=self._warm_up, daemon=True).start()
 
@@ -284,8 +290,68 @@ class Agent:
     def _warm_up():
         """Carga el modelo en memoria al arrancar para que el primer pedido sea rápido."""
         for _ in range(10):
-            try: llm([{"role": "user", "content": "hola"}], as_json=False); return
+            try:
+                llm([{"role": "user", "content": "hola"}], as_json=False, model=MODEL_ROUTER)   # el que entiende pedidos
+                return
             except Exception: time.sleep(6)   # Ollama todavía arrancando con Windows
+
+    def route_local(self, text):
+        """Sin nube: el clasificador elige las 3 acciones más probables (~30 ms) y la IA local sólo decide entre
+        esas (+ charla) con JSON forzado. Instrucciones ~5 veces más cortas que la lista completa."""
+        import mate_intencion as I
+        cands = I.candidatas(text, 3)
+        if not cands: return None                       # clasificador todavía cargando: camino de siempre
+        seg = I.seguro(text)
+        if seg: cands = [seg]                           # está seguro: la IA sólo completa los datos de esa acción
+        acciones = [a for a in dict.fromkeys(cands + ([] if seg and seg != "chat" else ["chat"]))]
+        lineas = {m.group(1): m.group(0) for m in re.finditer(r"^- (\w+) .*$", SYSTEM, re.M)}
+        # campos exactos de cada acción (de la lista de acciones): así no inventa claves
+        campos = {}
+        for a in acciones:
+            m = re.search(r"\{([^}]*)\}", lineas.get(a, ""))
+            campos[a] = re.findall(r'"(\w+)"', m.group(1)) if m else []
+        lista = "\n".join(lineas.get(a, f"- {a} {{}}") for a in acciones)
+        hoy = dt.date.today()
+        dias = ", ".join(f"{DIAS[(hoy + dt.timedelta(i)).weekday()]}={(hoy + dt.timedelta(i)).isoformat()}" for i in range(8))
+        extra = ""
+        if any(a in acciones for a in ("task_status", "move_task", "delete_task", "list_tasks")):
+            abiertas = [t for t in self.d["tasks"] if t["status"] != "hecha"][:25]
+            extra += "\nTareas abiertas (usá el texto exacto en \"task\"):\n" + "\n".join(f"- {t['text']}" for t in abiertas)
+        if any(a in acciones for a in ("add_task", "project_add")) and self.d.get("projects"):
+            extra += "\nSus proyectos: " + ", ".join(p["name"] for p in self.d["projects"])
+        sistema = (f"Sos {NAME}, asistente argentino. Elegí UNA acción para el pedido y completá sus datos.\n"
+                   f"Acciones posibles:\n{lista}\n"
+                   f"Si el pedido no es ninguna de esas o es un comentario, usá chat con una respuesta corta en reply.\n"
+                   f"Hoy es {DIAS[hoy.weekday()]} {hoy.isoformat()} ({dias}). Fechas en YYYY-MM-DD.{extra}\n"
+                   'Respondé SOLO JSON: {"action": "...", "args": {...}, "reply": "..."}')
+        todos = sorted({c for a in acciones for c in campos.get(a, [])})
+        props = {c: ({"type": "integer"} if c in ("minutes", "amount", "goal", "index") else {"type": "string"}) for c in todos}
+        schema = {"type": "object", "properties": {"action": {"type": "string", "enum": acciones},
+                                                   "args": {"type": "object", "properties": props, "additionalProperties": False},
+                                                   "reply": {"type": "string"}},
+                  "required": ["action", "args"]}
+        sistema += ("\nUsá SOLO los datos que dijo el usuario: no inventes mails, nombres ni archivos. "
+                    "Un campo que no se mencionó, dejalo afuera.")
+        t0 = time.time()
+        try:
+            raw = llm([{"role": "system", "content": sistema}, {"role": "user", "content": text}],
+                      model=MODEL_ROUTER, schema=schema, ctx=2048)
+        except Exception as e:
+            log(f"route_local: {e}"); return None
+        try: r = json.loads(raw)
+        except Exception: return None
+        # Fechas: las calcula Mate con el calendario (la IA chica se equivoca de día). "el viernes", "mañana", "lunes"…
+        a = r.get("action"); args = r.setdefault("args", {})
+        md = re.search(r"\b(hoy|pasado ma[nñ]ana|ma[nñ]ana|lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo)\b", text, re.I)
+        if a in ("add_task", "move_task", "cal_add", "cal_events") and md:
+            args["date"] = self._dia(md.group(1)).isoformat()
+            if a == "add_task" and args.get("text"):   # el día no va en el texto de la tarea
+                args["text"] = re.sub(r"\s*(?:para\s+)?(?:el\s+)?" + re.escape(md.group(1)) + r"\b|\s*\d{4}-\d{2}-\d{2}", "",
+                                      args["text"], flags=re.I).strip(" ,.")
+        if a == "move_task" and args.get("task") and md:   # "DM al viernes" -> "DM"
+            args["task"] = re.sub(r"\s*(?:al|a|para)?\s*(?:el\s+)?" + re.escape(md.group(1)) + r"\b.*$", "", args["task"], flags=re.I).strip()
+        log(f"local: {cands} -> {a} ({time.time() - t0:.1f}s)")
+        return r
 
     TEMA_TAREAS = re.compile(r"tarea|pas[aá]|mov[eé]|marc[aá]|borr[aá]|hech|termin|list[oa]|semana|hoy|mañana|"
                              r"proyecto|pendiente|esperando|curso|repart|reprogram|atrasad|qu[eé] tengo", re.I)
@@ -330,6 +396,11 @@ class Agent:
         (r"^(?:par[aá]|fren[aá]|cort[aá]|deten[eé]) (?:la )?grabaci[oó]n$|^dej[aá] de grabar$", "stop_recording", None),
         (r"^(?:qu[eé] )?tareas? (?:me (?:quedaron|tocaron|asignaron) )?de la (?:[uú]ltima )?reuni[oó]n(?: (?:con|de) (.+))?$", "meeting_tasks", "meeting"),
         (r"^(?:mate,?\s+)?(?:(?:pas[aá]|mov[eé])(?:me|mela|la)?\s+la tarea (?:de(?:l| la)?\s+)?(.+?)|la tarea (?:de(?:l| la)?\s+)?(.+?),?\s+(?:pas[aá]|mov[eé])(?:mela|la|me)?)\s+(?:al|a|para)\s+(?:el\s+)?((?:hoy|pasado ma[nñ]ana|ma[nñ]ana|lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo)(?:\s+\w+)?)$", "move_task", "move"),
+        # mensajes: "mandale a Juan por wsp que ya salgo" / "escribile a Lara por Slack que…" (destinatario y texto, sin IA)
+        (r"^(?:che,?\s+)?(?:mand[aá]le|escrib[ií]le|avis[aá]le|decile)(?: un (?:mensaje|whatsapp|wsp|wpp))? a ([\wáéíóúñ ]{2,30}?)\s+(?:por|en|al)\s+(whatsapp|whats|wsp|wpp|wasap|slack)\s*(?:(?:que|diciendo(?: que)?|:)\s*(.+))?$", "msg_send", "msg"),
+        (r"^(?:che,?\s+)?(?:mand[aá]le|escrib[ií]le|mand[aá])\s+un\s+(whatsapp|whats|wsp|wpp|wasap|slack|mensaje por whatsapp|mensaje por slack)\s+a\s+([\wáéíóúñ ]{2,30}?)\s*(?:(?:que|diciendo(?: que)?|:)\s*(.+))?$", "msg_send", "msg2"),
+        # "tengo que / hay que / me tengo que acordar de X (el lunes)" -> tarea
+        (r"^(?:che,?\s+)?(?!.*\b(?:reuni[oó]n|turno)\b.*\ba las\b)(?:tengo que|hay que|me tengo que acordar de|no me puedo olvidar de)\s+(.+)", "add_task", "text"),
         # (una reunión/turno con hora va al calendario, no a tareas: eso lo decide la IA)
         (r"^(?!.*\b(?:reuni[oó]n|evento|turno|llamada|meet|call)\b.*\ba las\b)(?:agend[aá](?:me)?|anot[aá](?:me)?(?: la tarea)?|nueva tarea|tarea)[:,]?\s+(?:la tarea[:,]?\s+|que\s+)?(.+)", "add_task", "text"),
         # música: sólo si no habla de tareas, fechas, recordatorios ni cosas de trabajo (eso lo decide la IA)
@@ -370,6 +441,12 @@ class Agent:
             elif arg == "move":
                 return {"action": "move_task", "args": {"task": (m.group(1) or m.group(2)).strip(),
                         "date": self._dia(m.group(3)).isoformat()}}
+            elif arg == "msg2":
+                canal = "slack_send" if "slack" in m.group(1).lower() else "whatsapp_send"
+                return {"action": canal, "args": {"to": m.group(2).strip(), "text": (m.group(3) or "").strip(" .")}}
+            elif arg == "msg":
+                canal = "slack_send" if m.group(2).lower() == "slack" else "whatsapp_send"
+                return {"action": canal, "args": {"to": m.group(1).strip(), "text": (m.group(3) or "").strip(" .")}}
             elif action == "find_file":
                 return {"action": "find_file", "args": {"query": f"{m.group(1)} {m.group(2)}".strip()}}
             elif action == "timer":
@@ -507,6 +584,10 @@ class Agent:
                 except Exception as e:
                     log(f"gemini texto (intento {intento}): {e}"); r = None
                     if intento == 1: self._step("Google está saturado, reintento"); time.sleep(1.5)
+        if not r:   # sin nube: clasificador rápido + IA local chica que sólo elige entre 3 acciones
+            self._step("Gemini no responde: lo entiendo acá" if self.gemini_key() else "Entendiendo el pedido")
+            r = self.route_local(text)
+            if r: raw = json.dumps(r, ensure_ascii=False)
         if not r:
             msgs = [{"role": "system", "content": self.system_prompt(text, compacto=True)}] + self.history[-2:] + \
                    [{"role": "user", "content": text}]
