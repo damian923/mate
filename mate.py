@@ -10,7 +10,7 @@ import urllib.request
 
 import mate_servicios as sv
 import mate_argento as ar
-from mate_audio import Listener, Speaker, log
+from mate_audio import Listener, Speaker, log, log_error
 
 
 def _re_bloq(text):
@@ -802,6 +802,34 @@ class Agent:
         self.d["last_brief"] = today.isoformat()
         return "\n".join(parts)
 
+    def _brief_con_voz(self):
+        """Resumen del primer arranque: en pantalla va completo; en voz, sólo lo importante (antes no decía nada)."""
+        txt = self.do_morning_brief()
+        try:
+            today = dt.date.today().isoformat()
+            hoy = self.tasks_in("today")
+            atr = [t for t in hoy if t["date"] < today]; due = [t for t in hoy if t["date"] == today]
+            def cuales(ts):   # "estructurar datos, de Jurisprudencia RAG; y ..." (máx. 4 para no hacerla larga)
+                pj = {p_["name"] for p_ in self.d.get("projects", [])}   # "from" puede ser el título de una reunión: sólo nombro proyectos de verdad
+                xs = [t["text"] + (f", del proyecto {t['from']}" if t.get("from") in pj else "") for t in ts[:4]]
+                s_ = "; ".join(xs[:-1]) + ("; y " if len(xs) > 1 else "") + xs[-1]
+                return s_ + (f"; y {len(ts) - 4} más" if len(ts) > 4 else "")
+            dicho = [ar.saludo().split("?")[0].replace("¡", "").strip() + "."]
+            if atr: dicho.append(f"Atrasada{'s' if len(atr) > 1 else ''}: {cuales(atr)}.")
+            dicho.append(f"Para hoy: {cuales(due)}." if due else "Para hoy no tenés tareas.")
+            ev = re.search(r"^Calendario: (.+)$", txt, re.M)
+            if ev:
+                n = ev.group(1).count(",") + 1
+                primero = ev.group(1).split(",")[0].strip()
+                dicho.append(f"En el calendario tenés {n} evento{'s' if n > 1 else ''}; el primero, {primero}.")
+            m = re.search(r"Tenés (\d+) mail", txt)
+            if m: dicho.append(f"Y {m.group(1)} mail{'s' if m.group(1) != '1' else ''} sin leer.")
+            if not self.ui.in_meeting():
+                self.ui.speaker.say(" ".join(dicho))
+        except Exception as e:
+            log_error("resumen hablado", e)
+        return txt
+
     # ================= recordatorios / foco / hábitos =================
     def do_reminder(self, a):
         if a.get("at"):
@@ -1297,7 +1325,7 @@ class Agent:
             for r in due: self.ui.alert("🔔 " + r["text"])
         if dt.datetime.now().hour >= 5 and self.d.get("last_brief") != dt.date.today().isoformat():
             self.d["last_brief"] = dt.date.today().isoformat()  # primer arranque del día
-            self.ui.background(self.do_morning_brief, speak=False)   # el saludo se ve, no se dice en voz alta
+            self.ui.background(self._brief_con_voz, speak=False)   # se ve entero y se dice una versión corta
         if self.focus_end:
             if not self.focus_break:  # suma minutos de enfoque del día
                 log = self.d.setdefault("focus_log", {}); k = dt.date.today().isoformat()
