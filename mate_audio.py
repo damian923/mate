@@ -64,7 +64,7 @@ VOICE_NAMES = {   # archivo -> nombre lindo para Ajustes
 
 
 # Voces de Microsoft (necesitan internet; muy naturales). La única masculina argentina disponible es Tomás.
-DEFAULT_VOICE = "edge:es-UY-MateoNeural"   # voz de Mate si no elegiste otra (con internet; sin, cae a una local)
+DEFAULT_VOICE = "es_AR-mate-medium"   # la voz propia de Mate: argentina y sin internet (si falta el archivo, cae a otra local)
 
 VOICES_ONLINE = {
     "edge:en-US-AndrewMultilingualNeural": "Andrew (hombre, la más natural · online)",
@@ -97,7 +97,7 @@ class Speaker:
         if not self.voice_id: self.voice_id = DEFAULT_VOICE
         local = self.voice_id if self.voice_id in ids else None
         vid = local or ("es_MX-ald-medium" if str(self.voice_id).startswith("edge:") and "es_MX-ald-medium" in ids else None) \
-              or ("es_AR-daniela-high" if "es_AR-daniela-high" in ids else (sorted(ids) or [None])[0])
+              or ("es_AR-mate-medium" if "es_AR-mate-medium" in ids else None)               or ("es_AR-daniela-high" if "es_AR-daniela-high" in ids else (sorted(ids) or [None])[0])
         if not vid: return None
         self._voice = PiperVoice.load(str(VOICES_DIR / f"{vid}.onnx"))
         return self._voice

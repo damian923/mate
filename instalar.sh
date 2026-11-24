@@ -61,6 +61,11 @@ for v in es_AR/daniela/high/es_AR-daniela-high es_MX/claude/high/es_MX-claude-hi
     curl -fsSL "https://huggingface.co/rhasspy/piper-voices/resolve/main/es/$v.onnx.json" -o "$DATA/voces/$n.onnx.json"
   fi
 done
+# La voz de Mate: argentina, entrenada para Mate, anda sin internet
+if [ ! -f "$DATA/voces/es_AR-mate-medium.onnx" ]; then
+  curl -fsSL "https://github.com/damian923/mate/releases/download/voz-mate-v1/es_AR-mate-medium.onnx" -o "$DATA/voces/es_AR-mate-medium.onnx"
+  curl -fsSL "https://github.com/damian923/mate/releases/download/voz-mate-v1/es_AR-mate-medium.onnx.json" -o "$DATA/voces/es_AR-mate-medium.onnx.json"
+fi
 
 echo "7/8 Configuracion..."
 [ -f "$DATA/config.json" ] || cp "$APP/config.ejemplo.json" "$DATA/config.json"
