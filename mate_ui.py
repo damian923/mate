@@ -252,8 +252,10 @@ class WebUI:
 
     def js(self, code):
         if not self.ready: return
-        try: self.window.evaluate_js(code)
-        except Exception: pass
+        lk = self.__dict__.setdefault("_js_lock", threading.Lock())
+        with lk:                                   # un solo hilo a la vez le habla a la ventana
+            try: self.window.evaluate_js(code)
+            except Exception: pass
 
     def notch(self, text, kind="", secs=4):
         self.call("status", text, kind, secs)

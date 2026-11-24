@@ -23,7 +23,20 @@ def _procs(name):
             if (p.info["name"] or "").lower().startswith(name.lower())]
 
 
+_com = __import__("threading").local()
+
+
+def _com_init():
+    """COM inicializado una vez por hilo (pywinauto/pycaw desde hilos sin COM causaban cuelgues y cierres)."""
+    if getattr(_com, "ok", False): return
+    try:
+        import comtypes; comtypes.CoInitialize()
+    except Exception: pass
+    _com.ok = True
+
+
 def _desktop():
+    _com_init()
     from pywinauto import Desktop
     return Desktop(backend="uia")
 
@@ -224,7 +237,10 @@ def granola_capturing():
     from pycaw.pycaw import IMMDeviceEnumerator, IAudioSessionManager2, IAudioSessionControl2
     pids = {p.pid for p in psutil.process_iter(["name"]) if (p.info["name"] or "").lower() == "granola.exe"}
     if not pids: return False
-    en = comtypes.CoCreateInstance(CLSID_MMDeviceEnumerator, IMMDeviceEnumerator, comtypes.CLSCTX_INPROC_SERVER)
+    _com_init()
+    en = getattr(_com, "en", None)            # se reusa el enumerador (antes se creaba uno cada 4 s)
+    if en is None:
+        en = _com.en = comtypes.CoCreateInstance(CLSID_MMDeviceEnumerator, IMMDeviceEnumerator, comtypes.CLSCTX_INPROC_SERVER)
     col = en.EnumAudioEndpoints(1, 1)          # micrófonos activos
     for d in range(col.GetCount()):
         mgr = col.Item(d).Activate(IAudioSessionManager2._iid_, CLSCTX_ALL, None).QueryInterface(IAudioSessionManager2)
