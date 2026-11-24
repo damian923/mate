@@ -129,7 +129,7 @@ class Speaker:
             cache = self.__dict__.setdefault("_otras", {})
             if vid not in cache: cache[vid] = PiperVoice.load(str(VOICES_DIR / f"{vid}.onnx"))
             v = cache[vid]
-        chunks = [c.audio_int16_array for c in v.synthesize(text, syn_config=SynthesisConfig(length_scale=1 / self.speed))]
+        chunks = [c.audio_int16_array for c in v.synthesize(text, syn_config=SynthesisConfig(length_scale=(v.config.length_scale or 1.0) / self.speed))]
         return np.concatenate(chunks), v.config.sample_rate
 
     # ---------------- muestras de voz (Ajustes) ----------------
