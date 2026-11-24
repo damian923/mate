@@ -72,6 +72,12 @@ foreach ($v in "es_AR/daniela/high/es_AR-daniela-high", "es_MX/claude/high/es_MX
     }
 }
 
+# La voz de Mate: argentina, entrenada para Mate, anda sin internet
+if (-not (Test-Path "$vdir\es_AR-mate-medium.onnx")) {
+    Invoke-WebRequest "https://github.com/damian923/mate/releases/download/voz-mate-v1/es_AR-mate-medium.onnx" -OutFile "$vdir\es_AR-mate-medium.onnx"
+    Invoke-WebRequest "https://github.com/damian923/mate/releases/download/voz-mate-v1/es_AR-mate-medium.onnx.json" -OutFile "$vdir\es_AR-mate-medium.onnx.json"
+}
+
 Write-Host "7/8 Configuracion..."
 if (-not (Test-Path "$dir\config.json")) { Copy-Item "$app\config.ejemplo.json" "$dir\config.json" }
 else {   # ya tenia Mate: le activo el perfil liviano sin tocar sus cuentas ni ajustes
