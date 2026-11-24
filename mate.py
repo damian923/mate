@@ -2,7 +2,7 @@
 Mate - asistente de escritorio 100% local (Windows).
 IA: Ollama (llama3.2:3b por defecto). Voz: Vosk + pyttsx3 (offline). Doble aplauso para activar.
 """
-import difflib, json, os, shutil, subprocess, sys, threading, time, uuid, datetime as dt
+import difflib, json, os, re, shutil, subprocess, sys, threading, time, uuid, datetime as dt
 from pathlib import Path
 if sys.stdout is None: sys.stdout = open(os.devnull, "w")   # con pythonw no hay consola: que las librerías
 if sys.stderr is None: sys.stderr = open(os.devnull, "w")   # que imprimen progreso no se caigan
@@ -212,7 +212,8 @@ def ensure_ollama():
 def llm(messages, as_json=True, temp=0.2):
     ensure_ollama()
     body = {"model": MODEL, "messages": messages, "stream": False, "keep_alive": KEEP,
-            "options": {"temperature": temp, "num_ctx": 4096, "num_predict": 90 if as_json else 160}}
+            "options": {"temperature": temp, "num_ctx": 3072, "num_predict": 120 if as_json else 160,
+                        "num_thread": max(2, (os.cpu_count() or 4) - 1)}}   # contexto justo + todos los núcleos menos uno
     if as_json: body["format"] = "json"
     req = urllib.request.Request(OLLAMA, json.dumps(body).encode(), {"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=180) as r:
@@ -286,15 +287,27 @@ class Agent:
             try: llm([{"role": "user", "content": "hola"}], as_json=False); return
             except Exception: time.sleep(6)   # Ollama todavía arrancando con Windows
 
-    def system_prompt(self):
+    TEMA_TAREAS = re.compile(r"tarea|pas[aá]|mov[eé]|marc[aá]|borr[aá]|hech|termin|list[oa]|semana|hoy|mañana|"
+                             r"proyecto|pendiente|esperando|curso|repart|reprogram|atrasad|qu[eé] tengo", re.I)
+
+    def system_prompt(self, text=None, compacto=False):
+        """Instrucciones para la IA. compacto=True (IA local, lenta en CPU): sin la lista de tareas salvo que el
+        pedido hable de tareas, y con menos ejemplos. Pasa de ~2.400 a ~900 tokens: varios segundos menos."""
         today = dt.date.today()
         days = "\n".join(f"{DIAS[(today + dt.timedelta(i)).weekday()]} = {(today + dt.timedelta(i)).isoformat()}"
                          for i in range(8))
         mem = "\n".join(f"- {m}" for m in self.d["memory"]) or "(nada todavía)"
         abiertas = [t for t in self.d["tasks"] if t["status"] != "hecha"][:40]
+        if compacto and not (text and self.TEMA_TAREAS.search(text)):
+            abiertas = []                       # no hace falta: el pedido no es sobre tareas
         tasks = "\n".join(f"- {t['text']} | {t.get('date') or 'sin fecha'} | {t['status']}" +
                           (f" | proyecto: {t['from']}" if t.get("from") else "") for t in abiertas) or "(ninguna)"
-        return (SYSTEM.replace("{tasks}", tasks).replace("{projects}", self.projects_text()).replace("{name}", NAME).replace("{persona}", ar.persona()).replace("{today}", f"{DIAS[today.weekday()]} {today.isoformat()}")
+        base = SYSTEM
+        if compacto:   # de los ejemplos dejo los 6 primeros (los más comunes)
+            a, _, resto = base.partition("Ejemplos:\n")
+            ej, _, cola = resto.partition("Nunca uses otra clave")
+            base = a + "Ejemplos:\n" + "\n".join(ej.strip().split("\n")[:6]) + "\nNunca uses otra clave" + cola
+        return (base.replace("{tasks}", tasks).replace("{projects}", self.projects_text()).replace("{name}", NAME).replace("{persona}", ar.persona()).replace("{today}", f"{DIAS[today.weekday()]} {today.isoformat()}")
                 .replace("{now}", dt.datetime.now().strftime("%H:%M")).replace("{days}", days)
                 .replace("{accounts}", ", ".join(self.gmail.accounts()) or "ninguna").replace("{memory}", mem))
 
@@ -495,7 +508,7 @@ class Agent:
                     log(f"gemini texto (intento {intento}): {e}"); r = None
                     if intento == 1: self._step("Google está saturado, reintento"); time.sleep(1.5)
         if not r:
-            msgs = [{"role": "system", "content": self.system_prompt()}] + self.history[-6:] + \
+            msgs = [{"role": "system", "content": self.system_prompt(text, compacto=True)}] + self.history[-2:] + \
                    [{"role": "user", "content": text}]
             self._step("Gemini no responde: uso la IA local (~15 s)" if self.gemini_key() else "Entendiendo el pedido")
             try:
