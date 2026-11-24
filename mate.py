@@ -32,7 +32,10 @@ ar.NIVEL = CFG.get("argentinidad", "normal")
 OLLAMA = "http://localhost:11434/api/chat"
 HOME = Path.home()
 DATA_DIR = HOME / ".mate"
-DATA_FILE = DATA_DIR / "data.json"
+# Modo demo (para mostrar Mate a clientes): datos aparte, así nunca se mezcla con tus tareas reales
+DEMO = bool(CFG.get("demo"))
+DATA_FILE = DATA_DIR / ("data_demo.json" if DEMO else "data.json")
+DEMO_DIR = Path(__file__).resolve().parent / "demo"
 DESKTOP = next((p for p in [HOME / "Desktop", HOME / "OneDrive" / "Escritorio", HOME / "Escritorio",
                             HOME / "OneDrive" / "Desktop"] if p.exists()), HOME / "Desktop")
 DIAS = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
@@ -59,6 +62,11 @@ def load():
             try: shutil.copy(f, f.with_name(f.name + f".roto-{int(time.time())}"))   # se guarda para no perderlo
             except Exception: pass
     d = d if isinstance(d, dict) else {}
+    if DEMO and not d.get("projects"):   # demo: arranca con proyectos de ejemplo
+        d["projects"] = [
+            {"name": "Agente Copilot", "description": "Agente en Copilot Studio para atención al cliente de DirectTV", "active": True},
+            {"name": "Capacitación DirectTV", "description": "Capacitación en IA de 4 bloques para el equipo de DirectTV", "active": True},
+            {"name": "Jurisprudencia RAG", "description": "Motor de búsqueda de jurisprudencia con RAG y Pinecone", "active": True}]
     for k, v in {"tasks": [], "reminders": [], "habits": {}, "memory": [], "projects": [], "last_cleanup": None}.items():
         d.setdefault(k, v)
     for t in d["tasks"]:  # migra tareas viejas
@@ -1032,8 +1040,9 @@ class Agent:
 
     def do_meeting_tasks(self, a):
         import mate_control as C, mate_granola as GA, re as _re
-        title, body = None, None
-        if GA.has_key():   # con la API de Granola: se lee de internet, sin abrir la ventana
+        title, body = a.get("nota") or (None, None)      # modo demo: la nota viene armada, sin Granola
+        if body: pass
+        elif GA.has_key():   # con la API de Granola: se lee de internet, sin abrir la ventana
             try:
                 title, body = GA.latest_note(a.get("meeting"))
                 log(f"granola api: {'leí ' + repr(title) if body else 'todavía sin nota'}")
@@ -1080,7 +1089,14 @@ class Agent:
                   "4. Fecha SOLO si se menciona un día o plazo.\n"
                   'Respondé SOLO JSON: {"tareas":[{"texto":"verbo en infinitivo + qué","proyecto":"...","fecha":"YYYY-MM-DD o vacío"}]}')
         log(f"tareas: le pido a la IA que saque las tuyas ({len(mias)} líneas te nombran)")
-        out = ask_long(prompt, "Extraés tareas de reuniones. Respondés solo JSON válido.", max_tokens=1200, temp=0)
+        if a.get("respaldo"):   # demo: si la IA tarda más de 25 s, uso la respuesta ya preparada (la demo no se cuelga)
+            res = {}
+            th = threading.Thread(target=lambda: res.setdefault("out", ask_long(prompt, "Extraés tareas de reuniones. Respondés solo JSON válido.", max_tokens=1200, temp=0)), daemon=True)
+            th.start(); th.join(25)
+            out = res.get("out") or json.dumps(a["respaldo"], ensure_ascii=False)
+            if "out" not in res: log("demo: la IA tardó, uso las tareas preparadas")
+        else:
+            out = ask_long(prompt, "Extraés tareas de reuniones. Respondés solo JSON válido.", max_tokens=1200, temp=0)
         log(f"tareas: la IA respondió ({len(out or '')} caracteres)")
         m = _re.search(r"\{.*\}", out, _re.S)
         try: tareas = json.loads(m.group(0))["tareas"] if m else []
@@ -1117,6 +1133,18 @@ class Agent:
         save(self.d)
         detalle = "\n".join(f"• {p}: {len(v)}" for p, v in por_proy.items())
         return f"✓ Sumé {n} tarea{'s' if n != 1 else ''} de «{corto}»\n{detalle}"
+
+    def demo_meeting(self):
+        """Modo demo: simula que terminó una reunión grabada con Granola y corre el flujo completo
+        (leer la nota → sacar TUS tareas → asignarlas a cada proyecto → tarjeta para confirmar)."""
+        import mate_servicios
+        nombre = ((mate_servicios.config().get("user_name") or "").strip() or "vos").split()[0]
+        body = (DEMO_DIR / "nota_demo.md").read_text(encoding="utf-8").replace("{nombre}", nombre)
+        respaldo = json.loads((DEMO_DIR / "tareas_demo.json").read_text(encoding="utf-8"))
+        for t in respaldo["tareas"]:                       # "jueves" -> fecha real
+            if t.get("fecha") and not re.match(r"\d{4}-", t["fecha"]): t["fecha"] = self._dia(t["fecha"]).isoformat()
+        self.ui.notch("Terminó la reunión: te busco tus tareas en Granola", "think", 10)
+        return self.do_meeting_tasks({"nota": ("Seguimiento semanal de proyectos", body), "forzar": True, "respaldo": respaldo})
 
     def do_app_click(self, a):
         import mate_control; return mate_control.app_click(a.get("app", ""), a.get("button", ""))
@@ -1284,7 +1312,7 @@ class Agent:
                     self.ui.alert(ar.di("descanso"))
             else:
                 return f"{'☕' if self.focus_break else '🎯'} {int(left // 60):02d}:{int(left % 60):02d}"
-        if CFG.get("mail_alerts", True) and now - self.last_mail_check > (180 if LIVIANO else 90) and self.gmail.accounts():
+        if not DEMO and CFG.get("mail_alerts", True) and now - self.last_mail_check > (180 if LIVIANO else 90) and self.gmail.accounts():
             self.last_mail_check = now
             threading.Thread(target=self._mail_watch, daemon=True).start()
         return None

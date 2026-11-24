@@ -318,7 +318,7 @@ class WebUI:
         from mate_audio import voices
         cfg = {k: self.cfg.get(k) for k in ("voice", "speak", "mail_alerts", "clap_threshold", "model", "wake_word",
                                             "claps", "voice_id", "voice_speed", "look", "expresivo", "argentinidad",
-                                            "gestos", "toque", "ojos", "desktop", "mail_nivel", "tema", "ciudad", "avisos_sistema", "letras", "ocultar_en_llamada", "user_name", "user_aliases")}
+                                            "gestos", "toque", "ojos", "desktop", "mail_nivel", "tema", "ciudad", "avisos_sistema", "letras", "ocultar_en_llamada", "user_name", "user_aliases", "demo")}
         cfg["voices"] = voices()
         cfg["gemini_on"] = bool((self.cfg.get("gemini_key") or "").strip())   # la clave nunca viaja a la página
         cfg["granola_on"] = bool((self.cfg.get("granola_key") or "").strip())
@@ -891,6 +891,18 @@ class Api:
 
     def clip_clear(self):
         if getattr(self._ui, "clip", None): self._ui.clip.items = []; self._ui.push()
+
+    def demo_toggle(self, on):
+        """Prende/apaga el modo demo. Se reinicia Mate solo (datos aparte: tus tareas reales no se tocan)."""
+        self.cfg("demo", bool(on))
+        import subprocess as sp, sys as _s
+        lanz = Path(__file__).resolve().parent / "mate_lanzador.py"
+        sp.Popen([_s.executable, str(lanz)], cwd=str(lanz.parent), creationflags=0x08000000 if not IS_MAC else 0)
+        threading.Timer(0.5, lambda: os._exit(0)).start()
+
+    def demo_meeting(self):
+        """Botón 'Simular fin de reunión' (modo demo)."""
+        self._ui.background(self._ui.agent.demo_meeting, speak=False)
 
     def wa_contacts(self):
         threading.Thread(target=self._ui.take_focus, daemon=True).start()   # para poder escribir en el buscador

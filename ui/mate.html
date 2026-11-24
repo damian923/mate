@@ -278,6 +278,10 @@ body.dropping #drop{display:flex}
 .vrow .vname{flex:1;font-size:13px}
 .vrow .vcur{font-size:12px;color:var(--yerba, #8FA878)}
 .vrow .vuse{padding:4px 12px;font-size:12px}
+#demoBar{position:absolute;left:50%;bottom:14px;transform:translateX(-50%);display:flex;gap:12px;align-items:center;
+  background:var(--surface-3);border:1px solid var(--cuero, #C48A57);border-radius:999px;padding:6px 6px 6px 16px;font-size:12.5px;z-index:30;
+  box-shadow:0 8px 24px rgba(0,0,0,.35)}
+#demoBar .btn{padding:6px 14px}
 .tpick{display:flex;flex-direction:column;gap:6px;max-height:280px;overflow:auto;margin-bottom:6px}
 .tp{display:flex;align-items:center;gap:8px;background:var(--surface-2);border-radius:10px;padding:7px 10px;cursor:pointer}
 .tp .tt{flex:1;font-size:13px}
@@ -389,6 +393,7 @@ kbd{font:600 10.5px var(--mono);opacity:.7}
       <button data-v="portapapeles">Portapapeles</button>
       <button data-v="memoria">Memoria</button>
       <button data-v="ajustes">Ajustes</button>
+      <button onclick="event.stopPropagation();api('demo_toggle', !(S.cfg&&S.cfg.demo))" id="demoBtn">Modo demo</button>
       <button onclick="event.stopPropagation();openModal({id:'_quit',kind:'confirm',title:'¿Cierro Mate?',text:'Se cierra del todo. Para abrirlo de nuevo: menú Inicio → Mate (o se abre solo al prender la compu).',ok:'Cerrar Mate'})" style="color:#d66a52">Cerrar Mate</button>
     </div>
     <button class="close" onclick="api('collapse')" title="Cerrar (Esc)"><svg width="13" height="13" viewBox="0 0 14 14"><path d="M3 3l8 8M11 3l-8 8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button>
@@ -841,7 +846,20 @@ function niceDate(s){ if(!s) return "sin fecha"; const d=new Date(s+"T12:00"); c
 const ST = ["pendiente","en curso","esperando","hecha"], STC = {"pendiente":"","en curso":"curso","esperando":"esperando","hecha":"hecha"};
 const STL = {"pendiente":"Pendiente","en curso":"En curso","esperando":"Esperando","hecha":"Hecha"};
 
+function renderDemo(){
+  let bar = $("demoBar");
+  const on = !!(S.cfg && S.cfg.demo);
+  if ($("demoBtn")) $("demoBtn").textContent = on ? "Salir del modo demo" : "Modo demo";
+  if (!on){ if (bar) bar.remove(); return; }
+  if (!bar){
+    bar = document.createElement("div"); bar.id = "demoBar";
+    bar.innerHTML = `<span><b>Modo demo</b> · datos de ejemplo (tus tareas reales no se tocan)</span>
+      <button class="btn" onclick="api('demo_meeting')">▶ Simular fin de reunión</button>`;
+    $("panel").appendChild(bar);
+  }
+}
 function render(){
+  renderDemo();
   const today=TODAY(), open=S.tasks.filter(t=>t.status!=="hecha");
   const forToday=open.filter(t=>t.date && t.date<=today);
   $("bTasks").textContent = open.length || "";
