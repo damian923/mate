@@ -278,6 +278,17 @@ body.dropping #drop{display:flex}
 .vrow .vname{flex:1;font-size:13px}
 .vrow .vcur{font-size:12px;color:var(--yerba, #8FA878)}
 .vrow .vuse{padding:4px 12px;font-size:12px}
+#demoBar{position:absolute;left:50%;bottom:14px;transform:translateX(-50%);display:flex;gap:12px;align-items:center;
+  background:var(--surface-3);border:1px solid var(--cuero, #C48A57);border-radius:999px;padding:6px 6px 6px 16px;font-size:12.5px;z-index:30;
+  box-shadow:0 8px 24px rgba(0,0,0,.35)}
+#demoBar .btn{padding:6px 14px}
+.tpick{display:flex;flex-direction:column;gap:6px;max-height:280px;overflow:auto;margin-bottom:6px}
+.tp{display:flex;align-items:center;gap:8px;background:var(--surface-2);border-radius:10px;padding:7px 10px;cursor:pointer}
+.tp .tt{flex:1;font-size:13px}
+.tp .tt small{color:var(--muted, #a09380)}
+.tp .tt .rep{color:var(--warn, #D9A24A)}
+.tp select{background:var(--surface-3);color:var(--txt);border-radius:6px;padding:3px 6px;max-width:150px;font-size:12px}
+.tp input{accent-color:var(--cuero, #C48A57)}
 .pform{display:flex;flex-direction:column;gap:8px;margin:0 0 14px}
 .pform textarea{resize:vertical;font:inherit}
 .fact.proj{align-items:flex-start}
@@ -382,6 +393,7 @@ kbd{font:600 10.5px var(--mono);opacity:.7}
       <button data-v="portapapeles">Portapapeles</button>
       <button data-v="memoria">Memoria</button>
       <button data-v="ajustes">Ajustes</button>
+      <button onclick="event.stopPropagation();api('demo_toggle', !(S.cfg&&S.cfg.demo))" id="demoBtn">Modo demo</button>
       <button onclick="event.stopPropagation();openModal({id:'_quit',kind:'confirm',title:'¿Cierro Mate?',text:'Se cierra del todo. Para abrirlo de nuevo: menú Inicio → Mate (o se abre solo al prender la compu).',ok:'Cerrar Mate'})" style="color:#d66a52">Cerrar Mate</button>
     </div>
     <button class="close" onclick="api('collapse')" title="Cerrar (Esc)"><svg width="13" height="13" viewBox="0 0 14 14"><path d="M3 3l8 8M11 3l-8 8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button>
@@ -778,6 +790,7 @@ document.addEventListener("keydown",e=>{
   if ($("modal").classList.contains("on")){
     if(e.key==="Escape"){ e.preventDefault(); answer(modalKind==="confirm"?false:null); }
     else if(e.key==="Enter" && modalKind==="confirm"){ e.preventDefault(); answer(true); }
+    else if(e.key==="Enter" && modalKind==="tareas" && e.target.tagName!=="SELECT"){ e.preventDefault(); tareasOk(); }
     return;
   }
   if(e.key==="Escape") api("collapse");
@@ -833,7 +846,20 @@ function niceDate(s){ if(!s) return "sin fecha"; const d=new Date(s+"T12:00"); c
 const ST = ["pendiente","en curso","esperando","hecha"], STC = {"pendiente":"","en curso":"curso","esperando":"esperando","hecha":"hecha"};
 const STL = {"pendiente":"Pendiente","en curso":"En curso","esperando":"Esperando","hecha":"Hecha"};
 
+function renderDemo(){
+  let bar = $("demoBar");
+  const on = !!(S.cfg && S.cfg.demo);
+  if ($("demoBtn")) $("demoBtn").textContent = on ? "Salir del modo demo" : "Modo demo";
+  if (!on){ if (bar) bar.remove(); return; }
+  if (!bar){
+    bar = document.createElement("div"); bar.id = "demoBar";
+    bar.innerHTML = `<span><b>Modo demo</b> · datos de ejemplo (tus tareas reales no se tocan)</span>
+      <button class="btn" onclick="api('demo_meeting')">▶ Simular fin de reunión</button>`;
+    $("panel").appendChild(bar);
+  }
+}
 function render(){
+  renderDemo();
   const today=TODAY(), open=S.tasks.filter(t=>t.status!=="hecha");
   const forToday=open.filter(t=>t.date && t.date<=today);
   $("bTasks").textContent = open.length || "";
@@ -1086,6 +1112,7 @@ function renderSettings(){
   $("setList").innerHTML =
     `<div class="lbl">Cuentas</div>` + googleBlock() + spotifyBlock() + geminiBlock(c) + granolaBlock(c) +
     `<div class="set"><div><b>Tu nombre</b><small>Para saludarte y encontrar tus tareas en las notas de reunión</small></div><input class="inp" style="max-width:160px" value="${esc(c.user_name||S.name||"")}" onchange="api('cfg','user_name',this.value.trim())"></div>` +
+    `<div class="set"><div><b>Cómo te nombran en las reuniones</b><small>Separado por comas, para encontrar tus tareas en Granola (ej: Dami, Damián, DG)</small></div><input class="inp" style="max-width:160px" value="${esc(c.user_aliases||"")}" placeholder="Dami, Damián" onchange="api('cfg','user_aliases',this.value.trim())"></div>` +
     `<div class="set" style="align-items:flex-start"><div><b>Tu ciudad</b><small>Para el clima. Vacía = automática según tu conexión</small></div>${cityPicker("setCity", c.ciudad||"", true)}</div>` +
     `<div class="lbl">Personalidad</div>` + lvl("argentinidad",[["sobrio","Sobrio","“Agendado.”"],["normal","Normal","“Dale, anotado para el jueves.”"],["alto","Con todo","“¡Joya! Quedó para el jueves 🧉”"]],c.argentinidad||"normal") +
     `<div class="set"><div><b>Qué tan expresivo</b><small>Cuánto se mueve y hace gestos</small></div>${chips("expresivo",[["tranquilo","Tranquilo"],["normal","Normal"],["animado","Animado"]],c.expresivo||"normal")}</div>` +
@@ -1153,12 +1180,29 @@ function openModal(m){
   } else if(m.kind==="ask"){
     b.innerHTML=head+`<div class="hint" style="margin:0 0 10px">${esc(m.text)}</div><input class="f" id="mIn" placeholder="${esc(m.placeholder||"")}"><div class="acts"><button class="btn link" onclick="answer(null)">Cancelar</button><span class="sp"></span><button class="btn" onclick="answer($('mIn').value)">Listo</button></div>`;
     setTimeout(()=>{$("mIn").focus(); $("mIn").onkeydown=e=>{if(e.key==="Enter"){ e.stopPropagation(); answer($("mIn").value);} };},40);
+  } else if(m.kind==="tareas"){
+    // tareas de una reunión: tildar/destildar y cambiar el proyecto de cada una antes de sumarlas
+    const ps = m.projects||[];
+    const opts = p => [...new Set([p, ...ps])].filter(Boolean).map(x=>`<option ${x===p?"selected":""}>${esc(x)}</option>`).join("") + `<option value="">(sin proyecto)</option>`;
+    b.innerHTML = head + `<div class="hint" style="margin:0 0 8px">${esc(m.text||"")}</div><div class="tpick">` +
+      (m.items||[]).map((t,i)=>`<label class="tp"><input type="checkbox" checked data-i="${i}">
+        <span class="tt">${esc(t.texto)}${t.fecha?` <small>· ${esc(t.fecha_txt||t.fecha)}</small>`:""}${t.repetida?` <small class="rep">ya la tenés</small>`:""}</span>
+        <select data-p="${i}">${opts(t.proyecto)}</select></label>`).join("") + `</div>
+      <div class="acts"><button class="btn link" onclick="answer(null)">No sumar nada <kbd>Esc</kbd></button><span class="sp"></span>
+        <button class="btn" onclick="tareasOk()">Sumar las tildadas <kbd>↵</kbd></button></div>`;
+    (m.items||[]).forEach((t,i)=>{ if(t.repetida) b.querySelector(`input[data-i="${i}"]`).checked=false; });
   } else if(m.kind==="mail"){
     b.innerHTML=head+receipt([["PARA",m.to],["CUENTA",m.account]])+`<textarea id="mTxt" style="margin-top:8px">${esc(m.text)}</textarea>
       <div class="acts"><button class="btn link" onclick="answer(null)">Descartar</button><span class="sp"></span><button class="btn ghost" onclick="answer({mode:'draft',body:$('mTxt').value})">Guardar borrador</button><button class="btn" onclick="answer({mode:'send',body:$('mTxt').value})">Enviar</button></div>
       <div class="hint">Podés editar el texto. Al enviar tenés 5 segundos para deshacer.</div>`;
   }
   b.querySelectorAll("canvas.mm").forEach(c=>drawMate(c,"speaking",.1));
+}
+function tareasOk(){
+  const b=$("mbox");
+  const elegidas = [...b.querySelectorAll("input[data-i]")].filter(x=>x.checked).map(x=>{
+    const i=+x.dataset.i; return {i, proyecto: b.querySelector(`select[data-p="${i}"]`).value}; });
+  answer(elegidas);
 }
 function answer(v){
   $("modal").classList.remove("on");

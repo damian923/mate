@@ -35,6 +35,7 @@ sleep 3
 echo "3/8 Modelos de IA: Llama 3.2 3B (~2 GB) y Qwen3.5 2B de Unsloth (~1,9 GB)..."
 ollama pull llama3.2:3b
 ollama pull hf.co/unsloth/Qwen3.5-2B-GGUF:Q4_K_M
+ollama pull qwen2.5:1.5b
 
 echo "4/8 Librerias de Python..."
 PY="$(brew --prefix python@3.12)/bin/python3.12"
@@ -72,7 +73,7 @@ cat > "$PLIST" <<EOF
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>ai.mate</string>
-  <key>ProgramArguments</key><array><string>$VENV/bin/python</string><string>$APP/mate.py</string></array>
+  <key>ProgramArguments</key><array><string>$VENV/bin/python</string><string>$APP/mate_lanzador.py</string></array>
   <key>WorkingDirectory</key><string>$APP</string>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><false/>

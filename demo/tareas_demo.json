@@ -1,0 +1,6 @@
+{"tareas": [
+  {"texto": "Armar la demo del agente con datos de ejemplo", "proyecto": "Agente Copilot", "fecha": "jueves"},
+  {"texto": "Averiguar costos de licencias premium y mandarlos por mail", "proyecto": "Agente Copilot", "fecha": "viernes"},
+  {"texto": "Adaptar el bloque 3 de la capacitación al contexto de DirectTV", "proyecto": "Capacitación DirectTV", "fecha": "miércoles"},
+  {"texto": "Diagramar la arquitectura del motor de búsqueda", "proyecto": "Jurisprudencia RAG", "fecha": "lunes"}
+]}

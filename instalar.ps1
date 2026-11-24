@@ -41,8 +41,9 @@ if (-not (Get-Command ollama -ErrorAction SilentlyContinue)) {
     Refresh-Path; $env:Path += ";$env:LOCALAPPDATA\Programs\Ollama"
 }
 
-Write-Host "3/8 Modelo de IA liviano: Llama 3.2 1B (~1,3 GB, para compus con 8 GB de RAM)..."
+Write-Host "3/8 Modelo de IA liviano: Llama 3.2 1B y Qwen 2.5 1.5B (~2,3 GB en total, para compus con 8 GB de RAM)..."
 ollama pull llama3.2:1b
+ollama pull qwen2.5:1.5b   # el que entiende pedidos sin nube
 
 Write-Host "4/8 Librerias de Python..."
 python -m pip install --upgrade pip -q
@@ -83,7 +84,7 @@ Write-Host "8/8 Inicio automatico con Windows..."
 $pyw = (Get-Command pythonw -ErrorAction SilentlyContinue).Source
 $lnk = "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\Mate.lnk"
 $s = (New-Object -ComObject WScript.Shell).CreateShortcut($lnk)
-$s.TargetPath = $pyw; $s.Arguments = "`"$app\mate.py`""; $s.WorkingDirectory = $app; $s.Save()
+$s.TargetPath = $pyw; $s.Arguments = "`"$app\mate_lanzador.py`""; $s.WorkingDirectory = $app; $s.Save()
 Copy-Item $lnk "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Mate.lnk" -Force   # tambien en el menu Inicio
 $c = (New-Object -ComObject WScript.Shell).CreateShortcut("$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Cerrar Mate.lnk")
 $c.TargetPath = $pyw; $c.Arguments = "`"$app\mate.py`" --cerrar"; $c.WorkingDirectory = $app; $c.Save()   # por si se traba
@@ -91,4 +92,4 @@ $c.TargetPath = $pyw; $c.Arguments = "`"$app\mate.py`" --cerrar"; $c.WorkingDire
 Write-Host ""
 Write-Host "  Listo. Mate arranca solo al prender la compu (lo ves arriba al centro de la pantalla)." -ForegroundColor Green
 Write-Host "  Pasale el mouse por arriba, contale tu nombre y en Mas > Ajustes conecta Google y Spotify."
-Start-Process $pyw -ArgumentList "`"$app\mate.py`"" -WorkingDirectory $app
+Start-Process $pyw -ArgumentList "`"$app\mate_lanzador.py`"" -WorkingDirectory $app

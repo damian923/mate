@@ -2,7 +2,7 @@
 Mate - asistente de escritorio 100% local (Windows).
 IA: Ollama (llama3.2:3b por defecto). Voz: Vosk + pyttsx3 (offline). Doble aplauso para activar.
 """
-import difflib, json, os, shutil, subprocess, sys, threading, time, uuid, datetime as dt
+import difflib, json, os, re, shutil, subprocess, sys, threading, time, uuid, datetime as dt
 from pathlib import Path
 if sys.stdout is None: sys.stdout = open(os.devnull, "w")   # con pythonw no hay consola: que las librerías
 if sys.stderr is None: sys.stderr = open(os.devnull, "w")   # que imprimen progreso no se caigan
@@ -24,13 +24,18 @@ LIVIANO = CFG.get("perfil") == "liviano"
 MODEL = os.environ.get("MATE_MODEL", CFG.get("model", "llama3.2:1b" if LIVIANO else "llama3.2:3b"))
 MODEL_LONG = CFG.get("model_long", MODEL if LIVIANO else "hf.co/unsloth/Qwen3.5-2B-GGUF:Q4_K_M")   # reuniones y textos largos
 KEEP = CFG.get("keep_alive", "5m" if LIVIANO else "2h")   # cuánto queda la IA local en memoria
+# IA local para entender pedidos: Qwen 2.5 1.5B sigue mucho mejor el formato JSON que llama3.2:3b y es más rápida
+MODEL_ROUTER = CFG.get("model_router", "qwen2.5:1.5b")
 WAKE = CFG.get("wake_word", "mate")
 NAME = CFG.get("name", "Mate")
 ar.NIVEL = CFG.get("argentinidad", "normal")
 OLLAMA = "http://localhost:11434/api/chat"
 HOME = Path.home()
 DATA_DIR = HOME / ".mate"
-DATA_FILE = DATA_DIR / "data.json"
+# Modo demo (para mostrar Mate a clientes): datos aparte, así nunca se mezcla con tus tareas reales
+DEMO = bool(CFG.get("demo"))
+DATA_FILE = DATA_DIR / ("data_demo.json" if DEMO else "data.json")
+DEMO_DIR = Path(__file__).resolve().parent / "demo"
 DESKTOP = next((p for p in [HOME / "Desktop", HOME / "OneDrive" / "Escritorio", HOME / "Escritorio",
                             HOME / "OneDrive" / "Desktop"] if p.exists()), HOME / "Desktop")
 DIAS = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
@@ -39,9 +44,29 @@ STATUS_ICON = {"pendiente": "○", "en curso": "◐", "esperando": "⏸", "hecha
 STATUS_COLOR = {"pendiente": "#e0e0e0", "en curso": "#4fc3f7", "esperando": "#fbbf24", "hecha": "#66bb6a"}
 
 
+_save_lock = threading.Lock()
+
+
 def load():
-    try: d = json.loads(DATA_FILE.read_text(encoding="utf-8"))
-    except Exception: d = {}
+    """Lee tus datos. Si data.json está roto (p. ej. se cortó a mitad de un guardado) usa la copia .bak
+    y guarda el roto aparte. NUNCA arranca vacío si había datos: antes eso borraba todas tus tareas."""
+    d = None
+    for f in (DATA_FILE, DATA_FILE.with_suffix(".json.bak")):
+        if not f.exists(): continue
+        try:
+            d = json.loads(f.read_text(encoding="utf-8"))
+            if f != DATA_FILE: log(f"datos: data.json estaba roto, recuperé de {f.name}")
+            break
+        except Exception as e:
+            log(f"datos: no pude leer {f.name} ({e})")
+            try: shutil.copy(f, f.with_name(f.name + f".roto-{int(time.time())}"))   # se guarda para no perderlo
+            except Exception: pass
+    d = d if isinstance(d, dict) else {}
+    if DEMO and not d.get("projects"):   # demo: arranca con proyectos de ejemplo
+        d["projects"] = [
+            {"name": "Agente Copilot", "description": "Agente en Copilot Studio para atención al cliente de DirectTV", "active": True},
+            {"name": "Capacitación DirectTV", "description": "Capacitación en IA de 4 bloques para el equipo de DirectTV", "active": True},
+            {"name": "Jurisprudencia RAG", "description": "Motor de búsqueda de jurisprudencia con RAG y Pinecone", "active": True}]
     for k, v in {"tasks": [], "reminders": [], "habits": {}, "memory": [], "projects": [], "last_cleanup": None}.items():
         d.setdefault(k, v)
     for t in d["tasks"]:  # migra tareas viejas
@@ -51,8 +76,18 @@ def load():
 
 
 def save(d):
+    """Guardado seguro: un solo hilo a la vez, escribe a un temporal y lo reemplaza de golpe (si se corta
+    a mitad, data.json queda como estaba), y deja la versión anterior como data.json.bak."""
     DATA_DIR.mkdir(exist_ok=True)
-    DATA_FILE.write_text(json.dumps(d, ensure_ascii=False, indent=1), encoding="utf-8")
+    with _save_lock:
+        txt = json.dumps(d, ensure_ascii=False, indent=1)
+        tmp = DATA_FILE.with_suffix(".json.tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(txt); f.flush(); os.fsync(f.fileno())
+        if DATA_FILE.exists():
+            try: os.replace(DATA_FILE, DATA_FILE.with_suffix(".json.bak"))
+            except Exception: pass
+        os.replace(tmp, DATA_FILE)
 
 
 def parse_date(s):
@@ -152,6 +187,7 @@ CÓMO ENTENDER BIEN:
 - Si es una frase sin pedido (un comentario, "me parece bien", algo dicho a otra persona), respondé
   {"action":"chat","args":{},"reply":""} (no hagas nada).
 - Nunca prometas cosas que no podés hacer ni hagas preguntas de relleno.
+- Si el pedido trae "¿día?" es que no se escuchó bien el día: NO agendes, preguntá en reply "¿Para qué día?".
 
 VARIAS ACCIONES: si el pedido implica varios cambios (ej. "pasá todas las de hoy a mañana", "repartilas entre
 mañana y el viernes", "marcá como hechas las de DM"), respondé {"actions": [{"action": "...", "args": {...}}, ...]}
@@ -183,11 +219,12 @@ def ensure_ollama():
     _ollama_ok = time.time()
 
 
-def llm(messages, as_json=True, temp=0.2):
+def llm(messages, as_json=True, temp=0.2, model=None, schema=None, ctx=3072):
     ensure_ollama()
-    body = {"model": MODEL, "messages": messages, "stream": False, "keep_alive": KEEP,
-            "options": {"temperature": temp, "num_ctx": 4096, "num_predict": 90 if as_json else 160}}
-    if as_json: body["format"] = "json"
+    body = {"model": model or MODEL, "messages": messages, "stream": False, "keep_alive": KEEP,
+            "options": {"temperature": temp, "num_ctx": ctx, "num_predict": 120 if as_json else 160,
+                        "num_thread": max(2, (os.cpu_count() or 4) - 1)}}   # contexto justo + todos los núcleos menos uno
+    if as_json: body["format"] = schema or "json"   # schema: JSON forzado (la IA no puede devolver otra cosa)
     req = urllib.request.Request(OLLAMA, json.dumps(body).encode(), {"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=180) as r:
         return json.loads(r.read())["message"]["content"]
@@ -248,6 +285,10 @@ class Agent:
         self.apps, self.last_list, self.last_mail_check = None, [], time.time()
         threading.Thread(target=lambda: setattr(self, "apps", sv.Apps()), daemon=True).start()
         # En el perfil liviano con Gemini, la IA local es sólo de respaldo: no la cargo en memoria al arrancar
+        try:
+            import mate_intencion; mate_intencion.precalentar()   # clasificador rápido (la 1ª vez baja ~220 MB)
+        except Exception as e:
+            log(f"clasificador no disponible: {e}")
         if not (LIVIANO and (sv.config().get("gemini_key") or "").strip()):
             threading.Thread(target=self._warm_up, daemon=True).start()
 
@@ -257,18 +298,90 @@ class Agent:
     def _warm_up():
         """Carga el modelo en memoria al arrancar para que el primer pedido sea rápido."""
         for _ in range(10):
-            try: llm([{"role": "user", "content": "hola"}], as_json=False); return
+            try:
+                llm([{"role": "user", "content": "hola"}], as_json=False, model=MODEL_ROUTER)   # el que entiende pedidos
+                return
             except Exception: time.sleep(6)   # Ollama todavía arrancando con Windows
 
-    def system_prompt(self):
+    def route_local(self, text):
+        """Sin nube: el clasificador elige las 3 acciones más probables (~30 ms) y la IA local sólo decide entre
+        esas (+ charla) con JSON forzado. Instrucciones ~5 veces más cortas que la lista completa."""
+        import mate_intencion as I
+        cands = I.candidatas(text, 3)
+        if not cands: return None                       # clasificador todavía cargando: camino de siempre
+        seg = I.seguro(text)
+        if seg: cands = [seg]                           # está seguro: la IA sólo completa los datos de esa acción
+        acciones = [a for a in dict.fromkeys(cands + ([] if seg and seg != "chat" else ["chat"]))]
+        lineas = {m.group(1): m.group(0) for m in re.finditer(r"^- (\w+) .*$", SYSTEM, re.M)}
+        # campos exactos de cada acción (de la lista de acciones): así no inventa claves
+        campos = {}
+        for a in acciones:
+            m = re.search(r"\{([^}]*)\}", lineas.get(a, ""))
+            campos[a] = re.findall(r'"(\w+)"', m.group(1)) if m else []
+        lista = "\n".join(lineas.get(a, f"- {a} {{}}") for a in acciones)
+        hoy = dt.date.today()
+        dias = ", ".join(f"{DIAS[(hoy + dt.timedelta(i)).weekday()]}={(hoy + dt.timedelta(i)).isoformat()}" for i in range(8))
+        extra = ""
+        if any(a in acciones for a in ("task_status", "move_task", "delete_task", "list_tasks")):
+            abiertas = [t for t in self.d["tasks"] if t["status"] != "hecha"][:25]
+            extra += "\nTareas abiertas (usá el texto exacto en \"task\"):\n" + "\n".join(f"- {t['text']}" for t in abiertas)
+        if any(a in acciones for a in ("add_task", "project_add")) and self.d.get("projects"):
+            extra += "\nSus proyectos: " + ", ".join(p["name"] for p in self.d["projects"])
+        sistema = (f"Sos {NAME}, asistente argentino. Elegí UNA acción para el pedido y completá sus datos.\n"
+                   f"Acciones posibles:\n{lista}\n"
+                   f"Si el pedido no es ninguna de esas o es un comentario, usá chat con una respuesta corta en reply.\n"
+                   f"Hoy es {DIAS[hoy.weekday()]} {hoy.isoformat()} ({dias}). Fechas en YYYY-MM-DD.{extra}\n"
+                   'Respondé SOLO JSON: {"action": "...", "args": {...}, "reply": "..."}')
+        todos = sorted({c for a in acciones for c in campos.get(a, [])})
+        props = {c: ({"type": "integer"} if c in ("minutes", "amount", "goal", "index") else {"type": "string"}) for c in todos}
+        schema = {"type": "object", "properties": {"action": {"type": "string", "enum": acciones},
+                                                   "args": {"type": "object", "properties": props, "additionalProperties": False},
+                                                   "reply": {"type": "string"}},
+                  "required": ["action", "args"]}
+        sistema += ("\nUsá SOLO los datos que dijo el usuario: no inventes mails, nombres ni archivos. "
+                    "Un campo que no se mencionó, dejalo afuera.")
+        t0 = time.time()
+        try:
+            raw = llm([{"role": "system", "content": sistema}, {"role": "user", "content": text}],
+                      model=MODEL_ROUTER, schema=schema, ctx=2048)
+        except Exception as e:
+            log(f"route_local: {e}"); return None
+        try: r = json.loads(raw)
+        except Exception: return None
+        # Fechas: las calcula Mate con el calendario (la IA chica se equivoca de día). "el viernes", "mañana", "lunes"…
+        a = r.get("action"); args = r.setdefault("args", {})
+        md = re.search(r"\b(hoy|pasado ma[nñ]ana|ma[nñ]ana|lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo)\b", text, re.I)
+        if a in ("add_task", "move_task", "cal_add", "cal_events") and md:
+            args["date"] = self._dia(md.group(1)).isoformat()
+            if a == "add_task" and args.get("text"):   # el día no va en el texto de la tarea
+                args["text"] = re.sub(r"\s*(?:para\s+)?(?:el\s+)?" + re.escape(md.group(1)) + r"\b|\s*\d{4}-\d{2}-\d{2}", "",
+                                      args["text"], flags=re.I).strip(" ,.")
+        if a == "move_task" and args.get("task") and md:   # "DM al viernes" -> "DM"
+            args["task"] = re.sub(r"\s*(?:al|a|para)?\s*(?:el\s+)?" + re.escape(md.group(1)) + r"\b.*$", "", args["task"], flags=re.I).strip()
+        log(f"local: {cands} -> {a} ({time.time() - t0:.1f}s)")
+        return r
+
+    TEMA_TAREAS = re.compile(r"tarea|pas[aá]|mov[eé]|marc[aá]|borr[aá]|hech|termin|list[oa]|semana|hoy|mañana|"
+                             r"proyecto|pendiente|esperando|curso|repart|reprogram|atrasad|qu[eé] tengo", re.I)
+
+    def system_prompt(self, text=None, compacto=False):
+        """Instrucciones para la IA. compacto=True (IA local, lenta en CPU): sin la lista de tareas salvo que el
+        pedido hable de tareas, y con menos ejemplos. Pasa de ~2.400 a ~900 tokens: varios segundos menos."""
         today = dt.date.today()
         days = "\n".join(f"{DIAS[(today + dt.timedelta(i)).weekday()]} = {(today + dt.timedelta(i)).isoformat()}"
                          for i in range(8))
         mem = "\n".join(f"- {m}" for m in self.d["memory"]) or "(nada todavía)"
         abiertas = [t for t in self.d["tasks"] if t["status"] != "hecha"][:40]
+        if compacto and not (text and self.TEMA_TAREAS.search(text)):
+            abiertas = []                       # no hace falta: el pedido no es sobre tareas
         tasks = "\n".join(f"- {t['text']} | {t.get('date') or 'sin fecha'} | {t['status']}" +
                           (f" | proyecto: {t['from']}" if t.get("from") else "") for t in abiertas) or "(ninguna)"
-        return (SYSTEM.replace("{tasks}", tasks).replace("{projects}", self.projects_text()).replace("{name}", NAME).replace("{persona}", ar.persona()).replace("{today}", f"{DIAS[today.weekday()]} {today.isoformat()}")
+        base = SYSTEM
+        if compacto:   # de los ejemplos dejo los 6 primeros (los más comunes)
+            a, _, resto = base.partition("Ejemplos:\n")
+            ej, _, cola = resto.partition("Nunca uses otra clave")
+            base = a + "Ejemplos:\n" + "\n".join(ej.strip().split("\n")[:6]) + "\nNunca uses otra clave" + cola
+        return (base.replace("{tasks}", tasks).replace("{projects}", self.projects_text()).replace("{name}", NAME).replace("{persona}", ar.persona()).replace("{today}", f"{DIAS[today.weekday()]} {today.isoformat()}")
                 .replace("{now}", dt.datetime.now().strftime("%H:%M")).replace("{days}", days)
                 .replace("{accounts}", ", ".join(self.gmail.accounts()) or "ninguna").replace("{memory}", mem))
 
@@ -291,6 +404,11 @@ class Agent:
         (r"^(?:par[aá]|fren[aá]|cort[aá]|deten[eé]) (?:la )?grabaci[oó]n$|^dej[aá] de grabar$", "stop_recording", None),
         (r"^(?:qu[eé] )?tareas? (?:me (?:quedaron|tocaron|asignaron) )?de la (?:[uú]ltima )?reuni[oó]n(?: (?:con|de) (.+))?$", "meeting_tasks", "meeting"),
         (r"^(?:mate,?\s+)?(?:(?:pas[aá]|mov[eé])(?:me|mela|la)?\s+la tarea (?:de(?:l| la)?\s+)?(.+?)|la tarea (?:de(?:l| la)?\s+)?(.+?),?\s+(?:pas[aá]|mov[eé])(?:mela|la|me)?)\s+(?:al|a|para)\s+(?:el\s+)?((?:hoy|pasado ma[nñ]ana|ma[nñ]ana|lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo)(?:\s+\w+)?)$", "move_task", "move"),
+        # mensajes: "mandale a Juan por wsp que ya salgo" / "escribile a Lara por Slack que…" (destinatario y texto, sin IA)
+        (r"^(?:che,?\s+)?(?:mand[aá]le|escrib[ií]le|avis[aá]le|decile)(?: un (?:mensaje|whatsapp|wsp|wpp))? a ([\wáéíóúñ ]{2,30}?)\s+(?:por|en|al)\s+(whatsapp|whats|wsp|wpp|wasap|slack)\s*(?:(?:que|diciendo(?: que)?|:)\s*(.+))?$", "msg_send", "msg"),
+        (r"^(?:che,?\s+)?(?:mand[aá]le|escrib[ií]le|mand[aá])\s+un\s+(whatsapp|whats|wsp|wpp|wasap|slack|mensaje por whatsapp|mensaje por slack)\s+a\s+([\wáéíóúñ ]{2,30}?)\s*(?:(?:que|diciendo(?: que)?|:)\s*(.+))?$", "msg_send", "msg2"),
+        # "tengo que / hay que / me tengo que acordar de X (el lunes)" -> tarea
+        (r"^(?:che,?\s+)?(?!.*\b(?:reuni[oó]n|turno)\b.*\ba las\b)(?:tengo que|hay que|me tengo que acordar de|no me puedo olvidar de)\s+(.+)", "add_task", "text"),
         # (una reunión/turno con hora va al calendario, no a tareas: eso lo decide la IA)
         (r"^(?!.*\b(?:reuni[oó]n|evento|turno|llamada|meet|call)\b.*\ba las\b)(?:agend[aá](?:me)?|anot[aá](?:me)?(?: la tarea)?|nueva tarea|tarea)[:,]?\s+(?:la tarea[:,]?\s+|que\s+)?(.+)", "add_task", "text"),
         # música: sólo si no habla de tareas, fechas, recordatorios ni cosas de trabajo (eso lo decide la IA)
@@ -321,6 +439,7 @@ class Agent:
 
     def fast_route(self, text):
         import re
+        if "¿día?" in text: return None             # día mal escuchado: que la IA pregunte, no agendar a ciegas
         t = text.strip().strip("¿¡?!.").strip()
         for pat, action, arg in self.FAST:
             m = re.match(pat, t, re.I)
@@ -330,6 +449,12 @@ class Agent:
             elif arg == "move":
                 return {"action": "move_task", "args": {"task": (m.group(1) or m.group(2)).strip(),
                         "date": self._dia(m.group(3)).isoformat()}}
+            elif arg == "msg2":
+                canal = "slack_send" if "slack" in m.group(1).lower() else "whatsapp_send"
+                return {"action": canal, "args": {"to": m.group(2).strip(), "text": (m.group(3) or "").strip(" .")}}
+            elif arg == "msg":
+                canal = "slack_send" if m.group(2).lower() == "slack" else "whatsapp_send"
+                return {"action": canal, "args": {"to": m.group(1).strip(), "text": (m.group(3) or "").strip(" .")}}
             elif action == "find_file":
                 return {"action": "find_file", "args": {"query": f"{m.group(1)} {m.group(2)}".strip()}}
             elif action == "timer":
@@ -467,8 +592,12 @@ class Agent:
                 except Exception as e:
                     log(f"gemini texto (intento {intento}): {e}"); r = None
                     if intento == 1: self._step("Google está saturado, reintento"); time.sleep(1.5)
+        if not r:   # sin nube: clasificador rápido + IA local chica que sólo elige entre 3 acciones
+            self._step("Gemini no responde: lo entiendo acá" if self.gemini_key() else "Entendiendo el pedido")
+            r = self.route_local(text)
+            if r: raw = json.dumps(r, ensure_ascii=False)
         if not r:
-            msgs = [{"role": "system", "content": self.system_prompt()}] + self.history[-6:] + \
+            msgs = [{"role": "system", "content": self.system_prompt(text, compacto=True)}] + self.history[-2:] + \
                    [{"role": "user", "content": text}]
             self._step("Gemini no responde: uso la IA local (~15 s)" if self.gemini_key() else "Entendiendo el pedido")
             try:
@@ -911,8 +1040,9 @@ class Agent:
 
     def do_meeting_tasks(self, a):
         import mate_control as C, mate_granola as GA, re as _re
-        title, body = None, None
-        if GA.has_key():   # con la API de Granola: se lee de internet, sin abrir la ventana
+        title, body = a.get("nota") or (None, None)      # modo demo: la nota viene armada, sin Granola
+        if body: pass
+        elif GA.has_key():   # con la API de Granola: se lee de internet, sin abrir la ventana
             try:
                 title, body = GA.latest_note(a.get("meeting"))
                 log(f"granola api: {'leí ' + repr(title) if body else 'todavía sin nota'}")
@@ -924,13 +1054,25 @@ class Agent:
                 time.sleep(2); title, body = C.granola_read_note(a.get("meeting"))   # Granola a veces tarda en cambiar de pantalla
             log(f"granola ventana: {'leí ' + repr(title) if body else 'no pude leer la nota'}")
         if not body: return "✗ No pude leer la nota de Granola"
-        import mate_servicios
+        import mate_servicios, hashlib, unicodedata
+        # ¿Esta nota ya la procesé? (reinicios, o la pedís de nuevo): no duplicar
+        huella = hashlib.sha1((title + body[:2000]).encode("utf-8", "ignore")).hexdigest()[:16]
+        hechas = self.d.setdefault("processed_notes", {})
+        forzar = a.get("forzar") or re.search(r"de nuevo|otra vez|nuevamente", getattr(self, "last_text", "") or "", re.I)
+        if huella in hechas and not forzar:
+            return f"Las tareas de «{title[:40]}» ya las había sacado ({hechas[huella]}). Si querés, pedime que las saque de nuevo."
         me = (mate_servicios.config().get("user_name") or "").strip() or "yo"
         hoy = dt.date.today()
         dias = ", ".join(f"{DIAS[(hoy + dt.timedelta(i)).weekday()]}={(hoy + dt.timedelta(i)).isoformat()}" for i in range(8))
+        # Cómo te nombran en las reuniones: tu nombre, con y sin tilde, el diminutivo ("Dami") y los alias de Ajustes.
+        # Se compara por palabra entera (antes "Dami" no coincidía y un prefijo podía agarrar a otra persona)
+        sin_tilde = lambda s: "".join(c for c in unicodedata.normalize("NFD", s) if unicodedata.category(c) != "Mn")
         nombre = me.split()[0].lower()
-        alias = [nombre] + ([nombre[:4]] if len(nombre) >= 5 else []) + ["yo ", " i will", "i'll"]
-        mias = [l.strip(" •◦-") for l in body.split("\n") if any(x in l.lower() for x in alias)]
+        alias = {nombre, sin_tilde(nombre)} | ({nombre[:4], sin_tilde(nombre)[:4]} if len(nombre) >= 5 else set())
+        alias |= {x.strip().lower() for x in (mate_servicios.config().get("user_aliases") or "").split(",") if x.strip()}
+        rx_yo = re.compile(r"\b(?:" + "|".join(re.escape(x) for x in sorted(alias, key=len, reverse=True)) +
+                           r")\b|\b(?:yo|me encargo|i will|i'll)\b", re.I)
+        mias = [l.strip(" •◦-") for l in body.split("\n") if rx_yo.search(sin_tilde(l)) or rx_yo.search(l)]
         # Las notas completas (no sólo las líneas que te nombran): así la IA ve de QUÉ tema es cada tarea.
         # Una reunión suele tocar varios proyectos: cada tarea lleva el suyo, no el título de la reunión.
         pista = ("\nLíneas que te nombran (ojo, puede haber otras tareas tuyas):\n" + "\n".join("- " + l for l in mias)) if mias else ""
@@ -947,30 +1089,62 @@ class Agent:
                   "4. Fecha SOLO si se menciona un día o plazo.\n"
                   'Respondé SOLO JSON: {"tareas":[{"texto":"verbo en infinitivo + qué","proyecto":"...","fecha":"YYYY-MM-DD o vacío"}]}')
         log(f"tareas: le pido a la IA que saque las tuyas ({len(mias)} líneas te nombran)")
-        out = ask_long(prompt, "Extraés tareas de reuniones. Respondés solo JSON válido.", max_tokens=1200, temp=0)
+        if a.get("respaldo"):   # demo: si la IA tarda más de 25 s, uso la respuesta ya preparada (la demo no se cuelga)
+            res = {}
+            th = threading.Thread(target=lambda: res.setdefault("out", ask_long(prompt, "Extraés tareas de reuniones. Respondés solo JSON válido.", max_tokens=1200, temp=0)), daemon=True)
+            th.start(); th.join(25)
+            out = res.get("out") or json.dumps(a["respaldo"], ensure_ascii=False)
+            if "out" not in res: log("demo: la IA tardó, uso las tareas preparadas")
+        else:
+            out = ask_long(prompt, "Extraés tareas de reuniones. Respondés solo JSON válido.", max_tokens=1200, temp=0)
         log(f"tareas: la IA respondió ({len(out or '')} caracteres)")
         m = _re.search(r"\{.*\}", out, _re.S)
         try: tareas = json.loads(m.group(0))["tareas"] if m else []
         except Exception: tareas = []
         tareas = [t for t in tareas if (t.get("texto") or "").strip()]
         if not tareas: return f"De '{title}' no saqué tareas para vos 🙌"
-        lista = "\n".join(f"Tarea: {t['texto']}" + (f" · {t['proyecto']}" if t.get("proyecto") else "") +
-                          (f" ({nice_date(t['fecha'])})" if parse_date(t.get("fecha")) else "") for t in tareas)
-        n = len(tareas)
-        if not self.ui.confirm(f"Encontré {n} tarea{'s' if n > 1 else ''} para vos en «{title[:40]}». ¿Las sumo?\n{lista}",
-                               ok="Agregar todas"):
-            return "Ok, no sumé nada"
+        # ¿Alguna ya está en tu lista? (parecida a una tarea abierta): viene destildada en la tarjeta
+        abiertas = [x["text"].lower() for x in self.d["tasks"] if x["status"] != "hecha"]
         for t in tareas:
+            t["proyecto"] = self.match_project(t.get("proyecto") or "") or ""
+            t["repetida"] = bool(difflib.get_close_matches(t["texto"].lower(), abiertas, 1, 0.85))
+            if parse_date(t.get("fecha")): t["fecha_txt"] = nice_date(t["fecha"])
+        n = len(tareas)
+        # Tarjeta editable: destildás las que no son tuyas y cambiás el proyecto de cada una
+        elegidas = self.ui._modal({"kind": "tareas", "title": f"Tus tareas de «{title[:40]}»",
+                                   "text": f"Encontré {n} tarea{'s' if n > 1 else ''} para vos. Destildá las que no son y revisá el proyecto.",
+                                   "items": tareas, "projects": [p["name"] for p in self.d.get("projects", [])]})
+        if not elegidas:
+            hechas[huella] = f"{hoy.isoformat()}, no sumaste ninguna"; save(self.d)
+            return "Ok, no sumé nada"
+        nuevas = []
+        for e in elegidas:
+            t = tareas[int(e["i"])]; t["proyecto"] = e.get("proyecto", t.get("proyecto"))
             d = parse_date(t.get("fecha"))
             self.d["tasks"].append({"id": uuid.uuid4().hex[:8], "text": t["texto"], "date": d.isoformat() if d else None,
-                                    "status": "pendiente", "from": self.match_project(t.get("proyecto") or title),
-                                    "meeting": title})
+                                    "status": "pendiente", "from": t["proyecto"] or None, "meeting": title})
+            nuevas.append(t)
+        hechas[huella] = f"{hoy.isoformat()}, sumaste {len(nuevas)}"
+        tareas, n = nuevas, len(nuevas)
         self.ui.refresh_board()
         corto = title if len(title) <= 45 else title[:45].rsplit(" ", 1)[0] + "…"
         por_proy = {}
-        for t in tareas: por_proy.setdefault(self.match_project(t.get("proyecto") or title), []).append(t["texto"])
+        for t in tareas: por_proy.setdefault(t.get("proyecto") or "sin proyecto", []).append(t["texto"])
+        save(self.d)
         detalle = "\n".join(f"• {p}: {len(v)}" for p, v in por_proy.items())
         return f"✓ Sumé {n} tarea{'s' if n != 1 else ''} de «{corto}»\n{detalle}"
+
+    def demo_meeting(self):
+        """Modo demo: simula que terminó una reunión grabada con Granola y corre el flujo completo
+        (leer la nota → sacar TUS tareas → asignarlas a cada proyecto → tarjeta para confirmar)."""
+        import mate_servicios
+        nombre = ((mate_servicios.config().get("user_name") or "").strip() or "vos").split()[0]
+        body = (DEMO_DIR / "nota_demo.md").read_text(encoding="utf-8").replace("{nombre}", nombre)
+        respaldo = json.loads((DEMO_DIR / "tareas_demo.json").read_text(encoding="utf-8"))
+        for t in respaldo["tareas"]:                       # "jueves" -> fecha real
+            if t.get("fecha") and not re.match(r"\d{4}-", t["fecha"]): t["fecha"] = self._dia(t["fecha"]).isoformat()
+        self.ui.notch("Terminó la reunión: te busco tus tareas en Granola", "think", 10)
+        return self.do_meeting_tasks({"nota": ("Seguimiento semanal de proyectos", body), "forzar": True, "respaldo": respaldo})
 
     def do_app_click(self, a):
         import mate_control; return mate_control.app_click(a.get("app", ""), a.get("button", ""))
@@ -1094,13 +1268,19 @@ class Agent:
                         self.ui.background(self._tasks_when_ready)
 
     def _tasks_when_ready(self):
-        """Granola tarda un poco en armar las notas: pruebo enseguida y reintento hasta que estén."""
+        """Granola tarda en armar las notas (más en reuniones largas): pruebo enseguida y reintento cada vez más
+        espaciado, hasta ~10 minutos, avisando en la isla. Antes se rendía a los ~77 s y te quedabas sin tareas."""
         res = "✗ No pude leer la nota de Granola"
-        for espera in (12, 15, 20, 30):
-            time.sleep(espera)
+        total = 0
+        for espera in (12, 15, 25, 40, 60, 90, 120, 180):
+            time.sleep(espera); total += espera
             res = self.do_meeting_tasks({})
             if not res.startswith("✗ No pude leer"): break
-            log("granola: notas todavía no listas, reintento")
+            log(f"granola: notas todavía no listas ({total} s), reintento")
+            self.ui.notch("Granola todavía está armando la nota… te aviso cuando esté", "think", 8)
+        if res.startswith("✗ No pude leer"):
+            res = ("✗ Granola no terminó la nota después de 10 minutos. Cuando esté, decime "
+                   "«¿qué tareas me quedaron de la última reunión?» y las saco.")
         return res
 
     def tick(self):
@@ -1109,7 +1289,8 @@ class Agent:
             self._gw = True; threading.Thread(target=self._granola_watch, daemon=True).start()
         if int(now) % 30 == 0:
             try: self._meeting_watch()
-            except Exception: pass
+            except Exception as e:
+                from mate_audio import log_error; log_error("avisos de reuniones", e)
         due = [r for r in self.d["reminders"] if r["ts"] <= now]
         if due:
             self.d["reminders"] = [r for r in self.d["reminders"] if r["ts"] > now]; save(self.d)
@@ -1131,7 +1312,7 @@ class Agent:
                     self.ui.alert(ar.di("descanso"))
             else:
                 return f"{'☕' if self.focus_break else '🎯'} {int(left // 60):02d}:{int(left % 60):02d}"
-        if CFG.get("mail_alerts", True) and now - self.last_mail_check > (180 if LIVIANO else 90) and self.gmail.accounts():
+        if not DEMO and CFG.get("mail_alerts", True) and now - self.last_mail_check > (180 if LIVIANO else 90) and self.gmail.accounts():
             self.last_mail_check = now
             threading.Thread(target=self._mail_watch, daemon=True).start()
         return None
@@ -1164,7 +1345,7 @@ class Agent:
             if new: self.d["mail_mark"] = max([desde] + [m["ts"] for m in new])
             self.d["seen_mails"] = list(avisados | {m["id"] for m in fresh})[-300:]
             save(self.d)
-            log(f"mails: {len(new)} recientes, {len(fresh)} nuevos")
+            if fresh: log(f"mails: {len(fresh)} nuevos")
             if not fresh: return
             nivel = sv.config().get("mail_nivel", "importantes")     # todos | importantes | nada (lo de Ajustes)
             if nivel == "nada": return
@@ -1186,9 +1367,12 @@ def _cerrar_copias_viejas():
     try:
         import psutil
         me = os.getpid()
+        mi_lanzador = int(os.environ.get("MATE_LAUNCHER_PID", "0") or 0)
         for p in psutil.process_iter(["pid", "cmdline"]):
             cmd = " ".join(p.info["cmdline"] or [])
-            if p.info["pid"] != me and "mate.py" in cmd and "python" in cmd.lower():
+            if p.info["pid"] in (me, mi_lanzador) or "python" not in cmd.lower(): continue
+            # primero los lanzadores viejos (si no, al matar su Mate lo relanzarían), después los Mate viejos
+            if "mate_lanzador.py" in cmd or "mate.py" in cmd:
                 p.kill()
     except Exception:
         pass
@@ -1197,5 +1381,7 @@ def _cerrar_copias_viejas():
 if __name__ == "__main__":
     _cerrar_copias_viejas()
     if "--cerrar" in sys.argv: sys.exit(0)        # "Cerrar Mate" del menú Inicio
+    import mate_audio; mate_audio.instalar_red_de_seguridad()   # errores y caídas quedan en mate.log / crash.log
+    log("Mate arrancó")
     from mate_ui import WebUI
     WebUI(Agent, Speaker, Listener, CFG, WAKE, NAME).start()

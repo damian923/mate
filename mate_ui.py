@@ -252,8 +252,10 @@ class WebUI:
 
     def js(self, code):
         if not self.ready: return
-        try: self.window.evaluate_js(code)
-        except Exception: pass
+        lk = self.__dict__.setdefault("_js_lock", threading.Lock())
+        with lk:                                   # un solo hilo a la vez le habla a la ventana
+            try: self.window.evaluate_js(code)
+            except Exception: pass
 
     def notch(self, text, kind="", secs=4):
         self.call("status", text, kind, secs)
@@ -318,7 +320,7 @@ class WebUI:
         from mate_audio import voices
         cfg = {k: self.cfg.get(k) for k in ("voice", "speak", "mail_alerts", "clap_threshold", "model", "wake_word",
                                             "claps", "voice_id", "voice_speed", "look", "expresivo", "argentinidad",
-                                            "gestos", "toque", "ojos", "desktop", "mail_nivel", "tema", "ciudad", "avisos_sistema", "letras", "ocultar_en_llamada")}
+                                            "gestos", "toque", "ojos", "desktop", "mail_nivel", "tema", "ciudad", "avisos_sistema", "letras", "ocultar_en_llamada", "user_name", "user_aliases", "demo")}
         cfg["voices"] = voices()
         cfg["gemini_on"] = bool((self.cfg.get("gemini_key") or "").strip())   # la clave nunca viaja a la página
         cfg["granola_on"] = bool((self.cfg.get("granola_key") or "").strip())
@@ -343,9 +345,13 @@ class WebUI:
 
     def background(self, fn, speak=True):
         def work():
-            res = fn()
+            try:
+                res = fn()
+            except Exception as e:   # antes: el hilo moría, busy quedaba en True y Mate no respondía más
+                from mate_audio import log_error; log_error("pedido", e)
+                res = f"✗ Uy, algo falló: {str(e)[:120]}"
             self.show(res, speak)
-        threading.Thread(target=work, daemon=True).start()
+        threading.Thread(target=work, daemon=True, name="pedido").start()
 
     def run(self, text, speak=True):
         if self.busy:   # antes se perdía en silencio: ahora queda en cola y te avisa
@@ -463,13 +469,17 @@ class WebUI:
             self.resize((ISLA["card"][0], min(260, 128 + 22 * max(rows, 1))))
             self.call("card", dict(spec, id=mid))
             threading.Thread(target=self.take_focus, daemon=True).start()
-            ev.wait()
+            if not ev.wait(timeout=180):           # antes esperaba para siempre: si la tarjeta no respondía, Mate se trababa
+                from mate_audio import log; log("tarjeta sin respuesta en 3 min: la cierro como 'no'")
+                self.js("cardOff()")
             self.card_on = False; self.wide_until = 0
             self._shrink_check()
         else:
             self.expand()
             self.call("modal", dict(spec, id=mid))
-            ev.wait()
+            if not ev.wait(timeout=600):           # un formulario (ej. responder mail) tiene más margen: 10 min
+                from mate_audio import log; log("ventana sin respuesta en 10 min: la cierro como 'no'")
+                self.js("document.getElementById('modal').classList.remove('on')")
         self.pending.pop(mid, None)
         return box.get("v")
 
@@ -498,8 +508,11 @@ class WebUI:
                 if self.speaker.speaking: self.call("mate", "speaking", 1)
                 if time.time() - last_push > 20:
                     last_push = time.time(); self.push()
-            except Exception:
-                pass
+            except Exception as e:
+                ultimo = getattr(self, "_loop_err", ("", 0))
+                if str(e) != ultimo[0] or time.time() - ultimo[1] > 300:   # el mismo error, como mucho cada 5 min
+                    from mate_audio import log_error; log_error("reloj principal", e)
+                    self._loop_err = (str(e), time.time())
 
     # ---------------- agenda, clima, dólar y feriado (se refresca cada 10 min) ----------------
     def _load_extras(self):
@@ -880,6 +893,18 @@ class Api:
 
     def clip_clear(self):
         if getattr(self._ui, "clip", None): self._ui.clip.items = []; self._ui.push()
+
+    def demo_toggle(self, on):
+        """Prende/apaga el modo demo. Se reinicia Mate solo (datos aparte: tus tareas reales no se tocan)."""
+        self.cfg("demo", bool(on))
+        import subprocess as sp, sys as _s
+        lanz = Path(__file__).resolve().parent / "mate_lanzador.py"
+        sp.Popen([_s.executable, str(lanz)], cwd=str(lanz.parent), creationflags=0x08000000 if not IS_MAC else 0)
+        threading.Timer(0.5, lambda: os._exit(0)).start()
+
+    def demo_meeting(self):
+        """Botón 'Simular fin de reunión' (modo demo)."""
+        self._ui.background(self._ui.agent.demo_meeting, speak=False)
 
     def wa_contacts(self):
         threading.Thread(target=self._ui.take_focus, daemon=True).start()   # para poder escribir en el buscador

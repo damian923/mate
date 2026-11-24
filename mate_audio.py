@@ -15,15 +15,46 @@ VOICES_DIR = DATA_DIR / "voces"
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 
 
+_log_lock = threading.Lock()
+LOG_MAX = 2 * 1024 * 1024   # 2 MB: después rota (mate.log -> mate.log.1) para que no crezca sin límite
+
+
 def log(*a):
-    """Registro de lo que escucha Mate (~/.mate/mate.log), útil para ajustar la voz."""
+    """Registro de Mate (~/.mate/mate.log). Rota a los 2 MB y es seguro desde varios hilos."""
     try:
-        with open(DATA_DIR / "mate.log", "a", encoding="utf-8") as f:
-            f.write(time.strftime("%H:%M:%S ") + " ".join(str(x) for x in a) + chr(10))
+        p = DATA_DIR / "mate.log"
+        with _log_lock:
+            if p.exists() and p.stat().st_size > LOG_MAX:
+                os.replace(p, DATA_DIR / "mate.log.1")
+            with open(p, "a", encoding="utf-8") as f:
+                f.write(time.strftime("%d/%m %H:%M:%S ") + " ".join(str(x) for x in a) + chr(10))
     except Exception:
         pass
 
+
+def log_error(donde, exc=None):
+    """Error con su traceback completo (antes los errores se tragaban en silencio y no había forma de saber por qué se caía)."""
+    import traceback
+    tb = "".join(traceback.format_exception(exc)) if exc else traceback.format_exc()
+    log(f"ERROR en {donde}:\n{tb.rstrip()}")
+
+
+def instalar_red_de_seguridad():
+    """Registro de crashes: errores de Python en cualquier hilo y caídas nativas (vosk, COM, WebView2)."""
+    import faulthandler, sys
+    try:
+        DATA_DIR.mkdir(exist_ok=True)
+        f = open(DATA_DIR / "crash.log", "a", encoding="utf-8")
+        f.write(f"\n=== Mate arrancó {time.strftime('%d/%m/%Y %H:%M:%S')} ===\n"); f.flush()
+        faulthandler.enable(f)                          # caídas nativas: deja el stack de cada hilo
+        instalar_red_de_seguridad._f = f                # que no se cierre el archivo
+    except Exception:
+        pass
+    sys.excepthook = lambda t, e, tb: log_error("programa principal", e)
+    threading.excepthook = lambda args: log_error(f"hilo {getattr(args.thread, 'name', '?')}", args.exc_value)
+
 VOICE_NAMES = {   # archivo -> nombre lindo para Ajustes
+    "es_AR-mate-medium": "Mate (Argentina, hombre · offline)",   # la que entrenamos con voz/entrenar_voz_argentina.ipynb
     "es_AR-daniela-high": "Daniela (Argentina)",
     "es_MX-claude-high": "Claude (México)",
     "es_MX-ald-medium": "Aldo (México)",
@@ -236,11 +267,15 @@ class Listener:
             text = json.loads(self.rec.Result()).get("text", "")
             audio = np.concatenate(self.utter) if self.utter else None
             self.utter = []; self._hinted = False
-            if text: log("vosk:", text); self._candidate(text, audio)
+            if text:   # sólo se registra si parece un "Mate…" (antes quedaba toda la charla y la tele en el log)
+                if self._has_wake(text): log("vosk:", text)
+                self._candidate(text, audio)
         elif not getattr(self, "_hinted", False):
             # Apenas se oye "Mate" (antes de que termines la frase) la isla ya reacciona: se siente instantáneo
             part = json.loads(self.rec.PartialResult()).get("partial", "")
-            if part and self._has_wake(part):
+            # "Mate" tiene que ir al PRINCIPIO de lo que se está diciendo ("Mate, …" / "che Mate…"): si aparece en el
+            # medio de una charla o de la tele, no se activa (eran la mayoría de las activaciones falsas)
+            if part and re.match(r"^\W*(?:che\s+|eh\s+|ey\s+|bueno\s+)?" + self._wake_rx(), part.lower()):
                 self._hinted = True
                 if self.on_wake_hint:
                     try: self.on_wake_hint()
@@ -318,7 +353,27 @@ class Listener:
                 m = difflib.get_close_matches(core, list(known), 1, 0.8)
                 if m: w = w.lower().replace(core, known[m[0]]) if w.islower() else w.replace(w.strip(".,;:!?¿¡"), known[m[0]])
             out.append(w)
-        return " ".join(out)
+        return self._fix_dias(" ".join(out))
+
+    DIAS = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
+
+    def _fix_dias(self, text):
+        """Días y horarios mal escuchados (en tu log: "Fala tarde", "El F a la tarde" por "el jueves a la tarde").
+        1) palabra parecida a un día -> ese día ("juevez" -> "jueves").
+        2) "el <cosa que no es un día> a la tarde/mañana/noche" -> no se puede adivinar qué día: se marca con '¿día?'
+           para que Mate pregunte en vez de agendar mal."""
+        import difflib
+        palabras = text.split()
+        for i, w in enumerate(palabras):
+            core = re.sub(r"[^\wáéíóú]", "", w.lower())
+            if len(core) >= 5 and core not in self.DIAS and core not in ("mates", "matés", "marte"):
+                m = difflib.get_close_matches(core, self.DIAS, 1, 0.8)
+                if m: palabras[i] = w.lower().replace(core, m[0])
+        text = " ".join(palabras)
+        comunes = r"y|o|e|que|de|del|por|la|lo|me|te|se|si|sí|yo|vos|hoy|ya|mas|más|en|a|al|un|una|el|es|era"
+        text = re.sub(r"(?:\b(el|para el)\s+)?\b(?!(?:" + "|".join(self.DIAS) + r"|día|finde|fin|" + comunes + r")\b)(\w{1,3})\s+(?=a la (?:tarde|mañana|noche))",
+                      lambda m: (m.group(1) + " " if m.group(1) else "") + "¿día? ", text, flags=re.I)
+        return re.sub(r"\b[Ff]ala tarde\b", "¿día? a la tarde", text)
 
     # ---------------- palabra clave ----------------
     def _wake_rx(self):
@@ -394,7 +449,21 @@ class Listener:
         waited = time.time() - c["t0"]
         wait_start = 5 if c.get("follow") else 8           # cuánto espera a que empieces a hablar
         # Fin del pedido: ~1,5 s de silencio (antes 0,8 s cortaba en las pausas normales al pensar qué decir)
-        pausa = int(self.pausa * 10)
+        pausa = int(self.pausa * 10) + c.get("extra", 0)
+        if c["speech"] and c["silence"] == pausa and not c.get("chequeado") and getattr(self, "parakeet", None) is not None:
+            # ¿Quedó la frase a medias ("…necesito que", "…llamar a")? Entonces espero 1,2 s más: estaba pensando
+            c["chequeado"] = True
+            try:
+                parcial = str(self.parakeet.recognize(np.concatenate(c["buf"]).astype(np.float32))).strip().lower()
+                ult = re.sub(r"[^\wáéíóúñ ]", "", parcial).split()[-1:] or [""]
+                if ult[0] in self.A_MEDIAS:
+                    c["extra"] = 12; log(f"frase a medias ('{ult[0]}'): espero un poco más")
+                    if self.on_pause:
+                        try: self.on_pause()
+                        except Exception: pass
+                    return
+            except Exception:
+                pass
         if (c["speech"] and c["silence"] >= pausa) or waited > 30 or (not c["speech"] and waited > wait_start):
             audio = np.concatenate(c["buf"]) if c["speech"] and c["buf"] else None
             follow, wake = c.get("follow"), c.get("wake")
@@ -403,6 +472,11 @@ class Listener:
         elif c["speech"] and c["silence"] == 6 and self.on_pause:
             try: self.on_pause()                               # "te sigo escuchando…": sabés que no te cortó
             except Exception: pass
+
+    # Palabras con las que una frase NO termina: si la pausa cae ahí, el usuario sigue pensando
+    A_MEDIAS = {"que", "de", "del", "y", "o", "a", "al", "el", "la", "los", "las", "un", "una", "para", "por", "con",
+                "en", "mi", "tu", "su", "necesito", "quiero", "necesitaría", "querría", "podés", "podrías", "sobre",
+                "como", "pero", "porque", "tipo", "este", "eh", "em", "entonces", "también", "le", "me"}
 
     MULETILLAS = {"ah", "eh", "em", "mm", "mmm", "no", "sí", "si", "este", "bueno", "o", "y", "a", "la", "el",
                   "ok", "okay", "uh", "ay", "che", "gracias", "chau", "nada"}
