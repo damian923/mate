@@ -575,6 +575,12 @@ class Agent:
 
     def handle(self, text, routed=None):
         self.last_text = text
+        # Pegaste una lista de tareas (varias líneas con viñetas): las paso todas por la tarjeta de tareas
+        trozos = re.split(r"\n|[;:]\s*(?=(?:[-•*]|\d+[.)])\s)", text)   # el cuadro de texto a veces junta las líneas en una
+        vinetas = [l for l in trozos if re.match(r"\s*(?:[-•*]|\d+[.)])\s+\S", l)]
+        if not routed and len(vinetas) >= 2:
+            m = re.match(r"\s*(?:de|del|de la)\s+(.{2,60}?)\s*:", text, re.I)
+            return self.do_meeting_tasks({"nota": ((m.group(1) if m else "lo que pegaste"), "\n".join(vinetas)), "forzar": True})
         quick = None if routed else self.charla(text)
         if quick:
             self.history += [{"role": "user", "content": text}, {"role": "assistant", "content": quick}]
@@ -603,6 +609,8 @@ class Agent:
             try:
                 raw = llm(msgs)
             except Exception as e:
+                if "404" in str(e):   # Ollama anda pero no encuentra el modelo (p. ej. cambió la carpeta de modelos)
+                    return "✗ Ollama está abierto pero no encuentra mis modelos. Fijate en Ollama → Settings que la carpeta de modelos sea la de siempre."
                 return "✗ No llego a Ollama. ¿Está abierto? (" + str(e)[:60] + ")"
             try: r = json.loads(raw)
             except Exception: r = {"action": "chat", "reply": raw[:300]}
@@ -1130,6 +1138,10 @@ class Agent:
         try: tareas = json.loads(m.group(0))["tareas"] if m else []
         except Exception: tareas = []
         tareas = [t for t in tareas if (t.get("texto") or "").strip()]
+        if not tareas and mias:   # la IA no devolvió nada (o no anduvo) pero hay líneas que te nombran: las uso tal cual
+            limpia = lambda l: re.sub(r"\s*[\(\[][^)\]]*[\)\]]\s*$", "", l.replace("**", "").replace("__", "")).strip(" .:-*•")
+            tareas = [{"texto": limpia(l)[0].upper() + limpia(l)[1:], "proyecto": "", "fecha": ""} for l in mias if len(limpia(l)) > 3]
+            log(f"tareas: la IA no sacó nada, uso las {len(tareas)} líneas que te nombran")
         if not tareas: return f"De '{title}' no saqué tareas para vos 🙌"
         # ¿Alguna ya está en tu lista? (parecida a una tarea abierta): viene destildada en la tarjeta
         abiertas = [x["text"].lower() for x in self.d["tasks"] if x["status"] != "hecha"]
