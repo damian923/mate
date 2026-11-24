@@ -177,6 +177,7 @@ CÓMO ENTENDER BIEN:
 - Si es una frase sin pedido (un comentario, "me parece bien", algo dicho a otra persona), respondé
   {"action":"chat","args":{},"reply":""} (no hagas nada).
 - Nunca prometas cosas que no podés hacer ni hagas preguntas de relleno.
+- Si el pedido trae "¿día?" es que no se escuchó bien el día: NO agendes, preguntá en reply "¿Para qué día?".
 
 VARIAS ACCIONES: si el pedido implica varios cambios (ej. "pasá todas las de hoy a mañana", "repartilas entre
 mañana y el viernes", "marcá como hechas las de DM"), respondé {"actions": [{"action": "...", "args": {...}}, ...]}
@@ -346,6 +347,7 @@ class Agent:
 
     def fast_route(self, text):
         import re
+        if "¿día?" in text: return None             # día mal escuchado: que la IA pregunte, no agendar a ciegas
         t = text.strip().strip("¿¡?!.").strip()
         for pat, action, arg in self.FAST:
             m = re.match(pat, t, re.I)
