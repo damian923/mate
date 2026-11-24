@@ -39,9 +39,24 @@ STATUS_ICON = {"pendiente": "○", "en curso": "◐", "esperando": "⏸", "hecha
 STATUS_COLOR = {"pendiente": "#e0e0e0", "en curso": "#4fc3f7", "esperando": "#fbbf24", "hecha": "#66bb6a"}
 
 
+_save_lock = threading.Lock()
+
+
 def load():
-    try: d = json.loads(DATA_FILE.read_text(encoding="utf-8"))
-    except Exception: d = {}
+    """Lee tus datos. Si data.json está roto (p. ej. se cortó a mitad de un guardado) usa la copia .bak
+    y guarda el roto aparte. NUNCA arranca vacío si había datos: antes eso borraba todas tus tareas."""
+    d = None
+    for f in (DATA_FILE, DATA_FILE.with_suffix(".json.bak")):
+        if not f.exists(): continue
+        try:
+            d = json.loads(f.read_text(encoding="utf-8"))
+            if f != DATA_FILE: log(f"datos: data.json estaba roto, recuperé de {f.name}")
+            break
+        except Exception as e:
+            log(f"datos: no pude leer {f.name} ({e})")
+            try: shutil.copy(f, f.with_name(f.name + f".roto-{int(time.time())}"))   # se guarda para no perderlo
+            except Exception: pass
+    d = d if isinstance(d, dict) else {}
     for k, v in {"tasks": [], "reminders": [], "habits": {}, "memory": [], "projects": [], "last_cleanup": None}.items():
         d.setdefault(k, v)
     for t in d["tasks"]:  # migra tareas viejas
@@ -51,8 +66,18 @@ def load():
 
 
 def save(d):
+    """Guardado seguro: un solo hilo a la vez, escribe a un temporal y lo reemplaza de golpe (si se corta
+    a mitad, data.json queda como estaba), y deja la versión anterior como data.json.bak."""
     DATA_DIR.mkdir(exist_ok=True)
-    DATA_FILE.write_text(json.dumps(d, ensure_ascii=False, indent=1), encoding="utf-8")
+    with _save_lock:
+        txt = json.dumps(d, ensure_ascii=False, indent=1)
+        tmp = DATA_FILE.with_suffix(".json.tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(txt); f.flush(); os.fsync(f.fileno())
+        if DATA_FILE.exists():
+            try: os.replace(DATA_FILE, DATA_FILE.with_suffix(".json.bak"))
+            except Exception: pass
+        os.replace(tmp, DATA_FILE)
 
 
 def parse_date(s):
@@ -1109,7 +1134,8 @@ class Agent:
             self._gw = True; threading.Thread(target=self._granola_watch, daemon=True).start()
         if int(now) % 30 == 0:
             try: self._meeting_watch()
-            except Exception: pass
+            except Exception as e:
+                from mate_audio import log_error; log_error("avisos de reuniones", e)
         due = [r for r in self.d["reminders"] if r["ts"] <= now]
         if due:
             self.d["reminders"] = [r for r in self.d["reminders"] if r["ts"] > now]; save(self.d)
@@ -1164,7 +1190,7 @@ class Agent:
             if new: self.d["mail_mark"] = max([desde] + [m["ts"] for m in new])
             self.d["seen_mails"] = list(avisados | {m["id"] for m in fresh})[-300:]
             save(self.d)
-            log(f"mails: {len(new)} recientes, {len(fresh)} nuevos")
+            if fresh: log(f"mails: {len(fresh)} nuevos")
             if not fresh: return
             nivel = sv.config().get("mail_nivel", "importantes")     # todos | importantes | nada (lo de Ajustes)
             if nivel == "nada": return
@@ -1186,9 +1212,12 @@ def _cerrar_copias_viejas():
     try:
         import psutil
         me = os.getpid()
+        mi_lanzador = int(os.environ.get("MATE_LAUNCHER_PID", "0") or 0)
         for p in psutil.process_iter(["pid", "cmdline"]):
             cmd = " ".join(p.info["cmdline"] or [])
-            if p.info["pid"] != me and "mate.py" in cmd and "python" in cmd.lower():
+            if p.info["pid"] in (me, mi_lanzador) or "python" not in cmd.lower(): continue
+            # primero los lanzadores viejos (si no, al matar su Mate lo relanzarían), después los Mate viejos
+            if "mate_lanzador.py" in cmd or "mate.py" in cmd:
                 p.kill()
     except Exception:
         pass
@@ -1197,5 +1226,7 @@ def _cerrar_copias_viejas():
 if __name__ == "__main__":
     _cerrar_copias_viejas()
     if "--cerrar" in sys.argv: sys.exit(0)        # "Cerrar Mate" del menú Inicio
+    import mate_audio; mate_audio.instalar_red_de_seguridad()   # errores y caídas quedan en mate.log / crash.log
+    log("Mate arrancó")
     from mate_ui import WebUI
     WebUI(Agent, Speaker, Listener, CFG, WAKE, NAME).start()

@@ -72,7 +72,7 @@ cat > "$PLIST" <<EOF
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>ai.mate</string>
-  <key>ProgramArguments</key><array><string>$VENV/bin/python</string><string>$APP/mate.py</string></array>
+  <key>ProgramArguments</key><array><string>$VENV/bin/python</string><string>$APP/mate_lanzador.py</string></array>
   <key>WorkingDirectory</key><string>$APP</string>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><false/>

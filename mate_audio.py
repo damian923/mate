@@ -15,13 +15,43 @@ VOICES_DIR = DATA_DIR / "voces"
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 
 
+_log_lock = threading.Lock()
+LOG_MAX = 2 * 1024 * 1024   # 2 MB: después rota (mate.log -> mate.log.1) para que no crezca sin límite
+
+
 def log(*a):
-    """Registro de lo que escucha Mate (~/.mate/mate.log), útil para ajustar la voz."""
+    """Registro de Mate (~/.mate/mate.log). Rota a los 2 MB y es seguro desde varios hilos."""
     try:
-        with open(DATA_DIR / "mate.log", "a", encoding="utf-8") as f:
-            f.write(time.strftime("%H:%M:%S ") + " ".join(str(x) for x in a) + chr(10))
+        p = DATA_DIR / "mate.log"
+        with _log_lock:
+            if p.exists() and p.stat().st_size > LOG_MAX:
+                os.replace(p, DATA_DIR / "mate.log.1")
+            with open(p, "a", encoding="utf-8") as f:
+                f.write(time.strftime("%d/%m %H:%M:%S ") + " ".join(str(x) for x in a) + chr(10))
     except Exception:
         pass
+
+
+def log_error(donde, exc=None):
+    """Error con su traceback completo (antes los errores se tragaban en silencio y no había forma de saber por qué se caía)."""
+    import traceback
+    tb = "".join(traceback.format_exception(exc)) if exc else traceback.format_exc()
+    log(f"ERROR en {donde}:\n{tb.rstrip()}")
+
+
+def instalar_red_de_seguridad():
+    """Registro de crashes: errores de Python en cualquier hilo y caídas nativas (vosk, COM, WebView2)."""
+    import faulthandler, sys
+    try:
+        DATA_DIR.mkdir(exist_ok=True)
+        f = open(DATA_DIR / "crash.log", "a", encoding="utf-8")
+        f.write(f"\n=== Mate arrancó {time.strftime('%d/%m/%Y %H:%M:%S')} ===\n"); f.flush()
+        faulthandler.enable(f)                          # caídas nativas: deja el stack de cada hilo
+        instalar_red_de_seguridad._f = f                # que no se cierre el archivo
+    except Exception:
+        pass
+    sys.excepthook = lambda t, e, tb: log_error("programa principal", e)
+    threading.excepthook = lambda args: log_error(f"hilo {getattr(args.thread, 'name', '?')}", args.exc_value)
 
 VOICE_NAMES = {   # archivo -> nombre lindo para Ajustes
     "es_AR-mate-medium": "Mate (Argentina, hombre · offline)",   # la que entrenamos con voz/entrenar_voz_argentina.ipynb
@@ -237,7 +267,9 @@ class Listener:
             text = json.loads(self.rec.Result()).get("text", "")
             audio = np.concatenate(self.utter) if self.utter else None
             self.utter = []; self._hinted = False
-            if text: log("vosk:", text); self._candidate(text, audio)
+            if text:   # sólo se registra si parece un "Mate…" (antes quedaba toda la charla y la tele en el log)
+                if self._has_wake(text): log("vosk:", text)
+                self._candidate(text, audio)
         elif not getattr(self, "_hinted", False):
             # Apenas se oye "Mate" (antes de que termines la frase) la isla ya reacciona: se siente instantáneo
             part = json.loads(self.rec.PartialResult()).get("partial", "")
