@@ -1045,13 +1045,25 @@ class Agent:
                 time.sleep(2); title, body = C.granola_read_note(a.get("meeting"))   # Granola a veces tarda en cambiar de pantalla
             log(f"granola ventana: {'leí ' + repr(title) if body else 'no pude leer la nota'}")
         if not body: return "✗ No pude leer la nota de Granola"
-        import mate_servicios
+        import mate_servicios, hashlib, unicodedata
+        # ¿Esta nota ya la procesé? (reinicios, o la pedís de nuevo): no duplicar
+        huella = hashlib.sha1((title + body[:2000]).encode("utf-8", "ignore")).hexdigest()[:16]
+        hechas = self.d.setdefault("processed_notes", {})
+        forzar = a.get("forzar") or re.search(r"de nuevo|otra vez|nuevamente", getattr(self, "last_text", "") or "", re.I)
+        if huella in hechas and not forzar:
+            return f"Las tareas de «{title[:40]}» ya las había sacado ({hechas[huella]}). Si querés, pedime que las saque de nuevo."
         me = (mate_servicios.config().get("user_name") or "").strip() or "yo"
         hoy = dt.date.today()
         dias = ", ".join(f"{DIAS[(hoy + dt.timedelta(i)).weekday()]}={(hoy + dt.timedelta(i)).isoformat()}" for i in range(8))
+        # Cómo te nombran en las reuniones: tu nombre, con y sin tilde, el diminutivo ("Dami") y los alias de Ajustes.
+        # Se compara por palabra entera (antes "Dami" no coincidía y un prefijo podía agarrar a otra persona)
+        sin_tilde = lambda s: "".join(c for c in unicodedata.normalize("NFD", s) if unicodedata.category(c) != "Mn")
         nombre = me.split()[0].lower()
-        alias = [nombre] + ([nombre[:4]] if len(nombre) >= 5 else []) + ["yo ", " i will", "i'll"]
-        mias = [l.strip(" •◦-") for l in body.split("\n") if any(x in l.lower() for x in alias)]
+        alias = {nombre, sin_tilde(nombre)} | ({nombre[:4], sin_tilde(nombre)[:4]} if len(nombre) >= 5 else set())
+        alias |= {x.strip().lower() for x in (mate_servicios.config().get("user_aliases") or "").split(",") if x.strip()}
+        rx_yo = re.compile(r"\b(?:" + "|".join(re.escape(x) for x in sorted(alias, key=len, reverse=True)) +
+                           r")\b|\b(?:yo|me encargo|i will|i'll)\b", re.I)
+        mias = [l.strip(" •◦-") for l in body.split("\n") if rx_yo.search(sin_tilde(l)) or rx_yo.search(l)]
         # Las notas completas (no sólo las líneas que te nombran): así la IA ve de QUÉ tema es cada tarea.
         # Una reunión suele tocar varios proyectos: cada tarea lleva el suyo, no el título de la reunión.
         pista = ("\nLíneas que te nombran (ojo, puede haber otras tareas tuyas):\n" + "\n".join("- " + l for l in mias)) if mias else ""
@@ -1075,21 +1087,34 @@ class Agent:
         except Exception: tareas = []
         tareas = [t for t in tareas if (t.get("texto") or "").strip()]
         if not tareas: return f"De '{title}' no saqué tareas para vos 🙌"
-        lista = "\n".join(f"Tarea: {t['texto']}" + (f" · {t['proyecto']}" if t.get("proyecto") else "") +
-                          (f" ({nice_date(t['fecha'])})" if parse_date(t.get("fecha")) else "") for t in tareas)
-        n = len(tareas)
-        if not self.ui.confirm(f"Encontré {n} tarea{'s' if n > 1 else ''} para vos en «{title[:40]}». ¿Las sumo?\n{lista}",
-                               ok="Agregar todas"):
-            return "Ok, no sumé nada"
+        # ¿Alguna ya está en tu lista? (parecida a una tarea abierta): viene destildada en la tarjeta
+        abiertas = [x["text"].lower() for x in self.d["tasks"] if x["status"] != "hecha"]
         for t in tareas:
+            t["proyecto"] = self.match_project(t.get("proyecto") or "") or ""
+            t["repetida"] = bool(difflib.get_close_matches(t["texto"].lower(), abiertas, 1, 0.85))
+            if parse_date(t.get("fecha")): t["fecha_txt"] = nice_date(t["fecha"])
+        n = len(tareas)
+        # Tarjeta editable: destildás las que no son tuyas y cambiás el proyecto de cada una
+        elegidas = self.ui._modal({"kind": "tareas", "title": f"Tus tareas de «{title[:40]}»",
+                                   "text": f"Encontré {n} tarea{'s' if n > 1 else ''} para vos. Destildá las que no son y revisá el proyecto.",
+                                   "items": tareas, "projects": [p["name"] for p in self.d.get("projects", [])]})
+        if not elegidas:
+            hechas[huella] = f"{hoy.isoformat()}, no sumaste ninguna"; save(self.d)
+            return "Ok, no sumé nada"
+        nuevas = []
+        for e in elegidas:
+            t = tareas[int(e["i"])]; t["proyecto"] = e.get("proyecto", t.get("proyecto"))
             d = parse_date(t.get("fecha"))
             self.d["tasks"].append({"id": uuid.uuid4().hex[:8], "text": t["texto"], "date": d.isoformat() if d else None,
-                                    "status": "pendiente", "from": self.match_project(t.get("proyecto") or title),
-                                    "meeting": title})
+                                    "status": "pendiente", "from": t["proyecto"] or None, "meeting": title})
+            nuevas.append(t)
+        hechas[huella] = f"{hoy.isoformat()}, sumaste {len(nuevas)}"
+        tareas, n = nuevas, len(nuevas)
         self.ui.refresh_board()
         corto = title if len(title) <= 45 else title[:45].rsplit(" ", 1)[0] + "…"
         por_proy = {}
-        for t in tareas: por_proy.setdefault(self.match_project(t.get("proyecto") or title), []).append(t["texto"])
+        for t in tareas: por_proy.setdefault(t.get("proyecto") or "sin proyecto", []).append(t["texto"])
+        save(self.d)
         detalle = "\n".join(f"• {p}: {len(v)}" for p, v in por_proy.items())
         return f"✓ Sumé {n} tarea{'s' if n != 1 else ''} de «{corto}»\n{detalle}"
 
@@ -1215,13 +1240,19 @@ class Agent:
                         self.ui.background(self._tasks_when_ready)
 
     def _tasks_when_ready(self):
-        """Granola tarda un poco en armar las notas: pruebo enseguida y reintento hasta que estén."""
+        """Granola tarda en armar las notas (más en reuniones largas): pruebo enseguida y reintento cada vez más
+        espaciado, hasta ~10 minutos, avisando en la isla. Antes se rendía a los ~77 s y te quedabas sin tareas."""
         res = "✗ No pude leer la nota de Granola"
-        for espera in (12, 15, 20, 30):
-            time.sleep(espera)
+        total = 0
+        for espera in (12, 15, 25, 40, 60, 90, 120, 180):
+            time.sleep(espera); total += espera
             res = self.do_meeting_tasks({})
             if not res.startswith("✗ No pude leer"): break
-            log("granola: notas todavía no listas, reintento")
+            log(f"granola: notas todavía no listas ({total} s), reintento")
+            self.ui.notch("Granola todavía está armando la nota… te aviso cuando esté", "think", 8)
+        if res.startswith("✗ No pude leer"):
+            res = ("✗ Granola no terminó la nota después de 10 minutos. Cuando esté, decime "
+                   "«¿qué tareas me quedaron de la última reunión?» y las saco.")
         return res
 
     def tick(self):

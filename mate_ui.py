@@ -318,7 +318,7 @@ class WebUI:
         from mate_audio import voices
         cfg = {k: self.cfg.get(k) for k in ("voice", "speak", "mail_alerts", "clap_threshold", "model", "wake_word",
                                             "claps", "voice_id", "voice_speed", "look", "expresivo", "argentinidad",
-                                            "gestos", "toque", "ojos", "desktop", "mail_nivel", "tema", "ciudad", "avisos_sistema", "letras", "ocultar_en_llamada")}
+                                            "gestos", "toque", "ojos", "desktop", "mail_nivel", "tema", "ciudad", "avisos_sistema", "letras", "ocultar_en_llamada", "user_name", "user_aliases")}
         cfg["voices"] = voices()
         cfg["gemini_on"] = bool((self.cfg.get("gemini_key") or "").strip())   # la clave nunca viaja a la página
         cfg["granola_on"] = bool((self.cfg.get("granola_key") or "").strip())
