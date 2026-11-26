@@ -417,12 +417,23 @@ class Listener:
         rms, peak = float(np.sqrt((s ** 2).mean())), float(np.abs(s).max())
         if now - self.started < 4:
             self.quiet = 0.9 * self.quiet + 0.1 * rms; return
-        # aplauso = golpe muy fuerte y corto sobre un ambiente tranquilo
-        if peak > self.thr and rms < peak * 0.3 and peak > self.quiet * 12:
+        # aplauso = golpe muy fuerte y corto sobre un ambiente TRANQUILO (en una clase o con charla no se usa:
+        # golpes, risas y teclado lo activaban decenas de veces y Mate contestaba lo que oía alrededor)
+        if now < getattr(self, "claps_pausa", 0) or self.quiet > 0.02:
+            self.quiet = 0.97 * self.quiet + 0.03 * rms; return
+        if peak > self.thr and rms < peak * 0.3 and peak > self.quiet * 15:
             if not self.claps or now - self.claps[-1] > 0.15:
                 self.claps = [c for c in self.claps if now - c < 1.0] + [now]
                 if len(self.claps) >= 2 and 0.18 < self.claps[-1] - self.claps[-2] < 0.75:
-                    self.claps = []; self.activate()
+                    self.claps = []
+                    seguidos = [t for t in getattr(self, "_aplausos_rec", []) if now - t < 300] + [now]
+                    self._aplausos_rec = seguidos
+                    if len(seguidos) >= 3:   # 3 en 5 min no es alguien llamándolo: es ruido. Pausa 30 min
+                        self.claps_pausa, self._aplausos_rec = now + 1800, []
+                        log("aplausos: demasiados seguidos (ruido), los pauso 30 min"); return
+                    log("aplausos: activado")
+                    self._por_aplauso = now
+                    self.activate()
         else:
             self.quiet = 0.97 * self.quiet + 0.03 * rms
 
